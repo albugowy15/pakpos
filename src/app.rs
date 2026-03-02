@@ -1,8 +1,8 @@
 use iced::{
     Element, Task,
-    keyboard::key::Code,
+    keyboard::{Key, key::Named},
     padding,
-    widget::{button, column, pick_list, row, text, text_editor, text_input},
+    widget::{button, column, container, pick_list, row, text, text_editor, text_input},
 };
 
 use crate::models::{EDITOR_TABS, EditorTab, HTTP_METHODS, HTTPMethod};
@@ -81,6 +81,27 @@ impl AppState {
             None
         };
 
+        let tab_editor_content_height = 400;
+
+        let tab_editor_active_content: Element<'_, AppMessage> = match self.editor_tab {
+            EditorTab::Body => text_editor(&self.raw_body_content)
+                .placeholder("Request Body")
+                .on_action(AppMessage::RawBodyContentEdit)
+                .highlight("json", iced::highlighter::Theme::SolarizedDark)
+                .key_binding(|event| {
+                    if event.key == Key::Named(Named::Tab) {
+                        Some(text_editor::Binding::Insert('\t'))
+                    } else {
+                        text_editor::Binding::from_key_press(event)
+                    }
+                })
+                .size(14)
+                .padding(padding::all(10))
+                .height(tab_editor_content_height)
+                .into(),
+            _ => text(self.editor_tab.to_string()).into(),
+        };
+
         column!(
             row!(
                 pick_list(
@@ -106,26 +127,13 @@ impl AppState {
                     .into()
             }))
             .spacing(10),
-            text_editor(&self.raw_body_content)
-                .placeholder("Request Body")
-                .on_action(AppMessage::RawBodyContentEdit)
-                .height(400)
-                .highlight("json", iced::highlighter::Theme::SolarizedDark)
-                .key_binding(|event| {
-                    if event.physical_key == Code::Tab {
-                        Some(text_editor::Binding::Insert('\t'))
-                    } else {
-                        text_editor::Binding::from_key_press(event)
-                    }
-                })
-                .size(14)
-                .padding(padding::left(10)),
+            tab_editor_active_content,
             text_editor(&self.response)
                 .height(400)
                 .highlight("json", iced::highlighter::Theme::SolarizedDark)
                 .on_action(AppMessage::ResponseEdit)
                 .key_binding(|event| {
-                    if event.physical_key == Code::Tab {
+                    if event.key == Key::Named(Named::Tab) {
                         Some(text_editor::Binding::Insert('\t'))
                     } else {
                         text_editor::Binding::from_key_press(event)
@@ -187,12 +195,14 @@ enum Error {
 
 impl From<reqwest::Error> for Error {
     fn from(value: reqwest::Error) -> Self {
+        dbg!(value);
         Self::APIError
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(value: serde_json::Error) -> Self {
+        dbg!(value);
         Self::SerdeError
     }
 }
