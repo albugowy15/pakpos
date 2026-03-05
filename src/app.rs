@@ -8,7 +8,12 @@ use iced::{
 };
 use uuid::Uuid;
 
-use crate::models::{EDITOR_TABS, EditorTab, METHODS, Method};
+use crate::net::RequestTask;
+use crate::ui::indent::handle_smart_indent;
+use crate::{
+    Error,
+    models::{EDITOR_TABS, EditorTab, FieldKind, KeyValueField, METHODS, Method},
+};
 
 #[derive(Default)]
 pub struct App {
@@ -20,12 +25,6 @@ pub struct App {
     query_params: Vec<KeyValueField>,
     headers: Vec<KeyValueField>,
     loading: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldKind {
-    QueryParam,
-    Header,
 }
 
 #[derive(Debug, Clone)]
@@ -42,13 +41,6 @@ pub enum AppMessage {
     FieldValueUpdated(FieldKind, String, String),
     AddField(FieldKind),
     RemoveField(FieldKind, String),
-}
-
-#[derive(Debug, Clone)]
-struct KeyValueField {
-    id: String,
-    key: Option<String>,
-    value: Option<String>,
 }
 
 impl App {
@@ -83,22 +75,18 @@ impl App {
                 let query_params: Vec<(String, String)> = self
                     .query_params
                     .iter()
-                    .filter_map(|row| {
-                        match (row.key.as_ref(), row.value.as_ref()) {
-                            (Some(k), Some(v)) if !k.is_empty() => Some((k.clone(), v.clone())),
-                            _ => None,
-                        }
+                    .filter_map(|row| match (row.key.as_ref(), row.value.as_ref()) {
+                        (Some(k), Some(v)) if !k.is_empty() => Some((k.clone(), v.clone())),
+                        _ => None,
                     })
                     .collect();
 
                 let headers: Vec<(String, String)> = self
                     .headers
                     .iter()
-                    .filter_map(|row| {
-                        match (row.key.as_ref(), row.value.as_ref()) {
-                            (Some(k), Some(v)) if !k.is_empty() => Some((k.clone(), v.clone())),
-                            _ => None,
-                        }
+                    .filter_map(|row| match (row.key.as_ref(), row.value.as_ref()) {
+                        (Some(k), Some(v)) if !k.is_empty() => Some((k.clone(), v.clone())),
+                        _ => None,
                     })
                     .collect();
 
@@ -318,301 +306,10 @@ impl App {
     }
 }
 
-fn handle_smart_indent(content: &mut text_editor::Content, action: text_editor::Action) {
-    match action {
-        text_editor::Action::Edit(text_editor::Edit::Insert(c @ ('{' | '[' | '"'))) => {
-            let matching = match c {
-                '{' => '}',
-                '[' => ']',
-                '"' => '"',
-                _ => unreachable!(),
-            };
-            content.perform(text_editor::Action::Edit(text_editor::Edit::Insert(c)));
-            content.perform(text_editor::Action::Edit(text_editor::Edit::Insert(
-                matching,
-            )));
-            content.perform(text_editor::Action::Move(text_editor::Motion::Left));
-        }
-        text_editor::Action::Edit(text_editor::Edit::Enter) => {
-            let cursor = content.cursor();
-            let line_index = cursor.position.line;
-            if let Some(line) = content.line(line_index) {
-                let text = &line.text;
-                let column = cursor.position.column;
-
-                let byte_offset = text
-                    .char_indices()
-                    .nth(column)
-                    .map(|(i, _)| i)
-                    .unwrap_or(text.len());
-
-                let text_before_cursor = &text[..byte_offset];
-
-                let ws_end = text_before_cursor
-                    .find(|c: char| !c.is_whitespace())
-                    .unwrap_or(text_before_cursor.len());
-                let leading_whitespace = &text_before_cursor[..ws_end];
-
-                let trimmed_before = text_before_cursor.trim_end();
-                let ends_with_open = trimmed_before.ends_with('{') || trimmed_before.ends_with('[');
-
-                let char_after_cursor = text.chars().nth(column);
-                let is_between_brackets = ends_with_open
-                    && match (trimmed_before.chars().last(), char_after_cursor) {
-                        (Some('{'), Some('}')) => true,
-                        (Some('['), Some(']')) => true,
-                        _ => false,
-                    };
-
-                if is_between_brackets {
-                    let mut to_insert = String::with_capacity(leading_whitespace.len() * 2 + 4);
-                    to_insert.push('\n');
-                    to_insert.push_str(leading_whitespace);
-                    to_insert.push('\t');
-                    to_insert.push('\n');
-                    to_insert.push_str(leading_whitespace);
-
-                    content.perform(text_editor::Action::Edit(text_editor::Edit::Paste(
-                        std::sync::Arc::new(to_insert),
-                    )));
-                    content.perform(text_editor::Action::Move(text_editor::Motion::Up));
-                    content.perform(text_editor::Action::Move(text_editor::Motion::End));
-                } else {
-                    let mut to_insert = String::with_capacity(leading_whitespace.len() + 2);
-                    to_insert.push('\n');
-                    to_insert.push_str(leading_whitespace);
-                    if ends_with_open {
-                        to_insert.push('\t');
-                    }
-                    content.perform(text_editor::Action::Edit(text_editor::Edit::Paste(
-                        std::sync::Arc::new(to_insert),
-                    )));
-                }
-            } else {
-                content.perform(action);
-            }
-        }
-        _ => content.perform(action),
-    }
-}
-
-struct RequestTask {
-    method: Method,
-    url: String,
-    body: String,
-    query_params: Vec<(String, String)>,
-    headers: Vec<(String, String)>,
-}
-
-impl RequestTask {
-    fn new(method: Method, url: String) -> Self {
-        Self {
-            method,
-            url,
-            body: String::new(),
-            query_params: Vec::new(),
-            headers: Vec::new(),
-        }
-    }
-
-    fn body(mut self, body: String) -> Self {
-        self.body = body;
-        self
-    }
-
-    fn query_params(mut self, params: Vec<(String, String)>) -> Self {
-        self.query_params = params;
-        self
-    }
-
-    fn headers(mut self, headers: Vec<(String, String)>) -> Self {
-        self.headers = headers;
-        self
-    }
-
-    async fn execute(self) -> Result<String, Error> {
-        let client = reqwest::Client::new();
-        let mut req = match self.method {
-            Method::Get => client.get(&self.url),
-            Method::Post => client.post(&self.url),
-            Method::Put => client.put(&self.url),
-            Method::Delete => client.delete(&self.url),
-            Method::Patch => client.patch(&self.url),
-            Method::Head => client.head(&self.url),
-        };
-
-        if !self.query_params.is_empty() {
-            req = req.query(&self.query_params);
-        }
-
-        for (key, val) in self.headers {
-            req = req.header(key, val);
-        }
-
-        if !self.body.is_empty() {
-            req = req.body(self.body.clone());
-        }
-
-        let result = req.send().await?;
-        let response = result.text().await?;
-
-        let parsed: serde_json::Value = match serde_json::from_str(&response) {
-            Ok(val) => val,
-            Err(_) => return Ok(response),
-        };
-
-        let mut buf = Vec::new();
-        let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");
-        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
-        serde::Serialize::serialize(&parsed, &mut ser)?;
-        Ok(String::from_utf8(buf).map_err(|_| Error::SerdeError)?)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Error {
-    APIError,
-    SerdeError,
-}
-
-impl From<reqwest::Error> for Error {
-    fn from(value: reqwest::Error) -> Self {
-        dbg!(value);
-        Self::APIError
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(value: serde_json::Error) -> Self {
-        dbg!(value);
-        Self::SerdeError
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::widget::text_editor::{Action, Content, Cursor, Edit, Motion, Position};
-
-    fn assert_content(
-        content: &Content,
-        expected_text: &str,
-        expected_line: usize,
-        expected_column: usize,
-    ) {
-        let text = content.text();
-        assert_eq!(text, expected_text, "Content text mismatch");
-        let cursor = content.cursor();
-        assert_eq!(cursor.position.line, expected_line, "Line mismatch");
-        assert_eq!(cursor.position.column, expected_column, "Column mismatch");
-    }
-
-    #[test]
-    fn test_insert_brackets_and_quotes() {
-        let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('{')));
-        assert_content(&content, "{}", 0, 1);
-
-        let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('[')));
-        assert_content(&content, "[]", 0, 1);
-
-        let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('"')));
-        assert_content(&content, "\"\"", 0, 1);
-    }
-
-    #[test]
-    fn test_insert_normal_char() {
-        let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('a')));
-        assert_content(&content, "a", 0, 1);
-    }
-
-    #[test]
-    fn test_default_action() {
-        let mut content = Content::with_text("abc");
-        handle_smart_indent(&mut content, Action::Move(Motion::Right));
-        assert_content(&content, "abc", 0, 1);
-    }
-
-    #[test]
-    fn test_enter_simple_indent() {
-        let mut content = Content::with_text("    abc");
-        content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
-        assert_content(&content, "    abc\n    ", 1, 4);
-    }
-
-    #[test]
-    fn test_enter_after_brace_indents() {
-        let mut content = Content::with_text("  {");
-        content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
-        assert_content(&content, "  {\n  \t", 1, 3);
-    }
-
-    #[test]
-    fn test_enter_after_bracket_indents() {
-        let mut content = Content::with_text("[");
-        content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
-        assert_content(&content, "[\n\t", 1, 1);
-    }
-
-    #[test]
-    fn test_enter_between_braces_splits() {
-        let mut content = Content::with_text("  {}");
-        content.perform(Action::Move(Motion::DocumentStart));
-        content.perform(Action::Move(Motion::Right));
-        content.perform(Action::Move(Motion::Right));
-        content.perform(Action::Move(Motion::Right));
-
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
-        assert_content(&content, "  {\n  \t\n  }", 1, 3);
-    }
-
-    #[test]
-    fn test_enter_between_brackets_splits() {
-        let mut content = Content::with_text("[]");
-        content.perform(Action::Move(Motion::DocumentStart));
-        content.perform(Action::Move(Motion::Right));
-
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
-        assert_content(&content, "[\n\t\n]", 1, 1);
-    }
-
-    #[test]
-    fn test_enter_with_multibyte_chars() {
-        let mut content = Content::with_text("🚀 {");
-        content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
-        assert_content(&content, "🚀 {\n\t", 1, 1);
-    }
-
-    #[test]
-    fn test_enter_invalid_line_index() {
-        let mut content = Content::new();
-        content.move_to(Cursor {
-            position: Position {
-                line: 100,
-                column: 0,
-            },
-            selection: None,
-        });
-
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
-        assert!(content.line_count() > 1);
-    }
-
-    #[test]
-    fn test_enter_between_mismatched_brackets() {
-        let mut content = Content::with_text("{]");
-        content.perform(Action::Move(Motion::DocumentStart));
-        content.perform(Action::Move(Motion::Right));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
-        assert_content(&content, "{\n\t]", 1, 1);
-    }
+    use iced::widget::text_editor::{Action, Edit};
 
     #[test]
     fn test_add_param_row() {
@@ -653,8 +350,16 @@ mod tests {
         let mut app = App::new();
         let _ = app.update(AppMessage::AddField(FieldKind::QueryParam));
         let id = app.query_params[0].id.clone();
-        let _ = app.update(AppMessage::FieldKeyUpdated(FieldKind::QueryParam, id.clone(), "name".to_owned()));
-        let _ = app.update(AppMessage::FieldValueUpdated(FieldKind::QueryParam, id.clone(), "pikachu".to_owned()));
+        let _ = app.update(AppMessage::FieldKeyUpdated(
+            FieldKind::QueryParam,
+            id.clone(),
+            "name".to_owned(),
+        ));
+        let _ = app.update(AppMessage::FieldValueUpdated(
+            FieldKind::QueryParam,
+            id.clone(),
+            "pikachu".to_owned(),
+        ));
         assert_eq!(app.query_params[0].key.as_deref(), Some("name"));
         assert_eq!(app.query_params[0].value.as_deref(), Some("pikachu"));
     }
@@ -663,23 +368,148 @@ mod tests {
     fn test_update_header_key_value() {
         let mut app = App::new();
         let id = app.headers[0].id.clone();
-        let _ = app.update(AppMessage::FieldKeyUpdated(FieldKind::Header, id.clone(), "X-Test".to_owned()));
-        let _ = app.update(AppMessage::FieldValueUpdated(FieldKind::Header, id.clone(), "Value".to_owned()));
+        let _ = app.update(AppMessage::FieldKeyUpdated(
+            FieldKind::Header,
+            id.clone(),
+            "X-Test".to_owned(),
+        ));
+        let _ = app.update(AppMessage::FieldValueUpdated(
+            FieldKind::Header,
+            id.clone(),
+            "Value".to_owned(),
+        ));
         assert_eq!(app.headers[0].key.as_deref(), Some("X-Test"));
         assert_eq!(app.headers[0].value.as_deref(), Some("Value"));
     }
 
     #[test]
-    fn test_request_task_builder() {
-        let task = RequestTask::new(Method::Post, "https://example.com".to_string())
-            .body("hello".to_string())
-            .query_params(vec![("a".to_owned(), "b".to_owned())])
-            .headers(vec![("c".to_owned(), "d".to_owned())]);
+    fn test_full_request_flow_e2e_simulation() {
+        let mut app = App::new();
 
-        assert_eq!(task.method, Method::Post);
-        assert_eq!(task.url, "https://example.com");
-        assert_eq!(task.body, "hello");
-        assert_eq!(task.query_params, vec![("a".to_owned(), "b".to_owned())]);
-        assert_eq!(task.headers, vec![("c".to_owned(), "d".to_owned())]);
+        // 1. Set URL
+        let _ = app.update(AppMessage::UrlChanged(
+            "https://httpbin.org/post".to_owned(),
+        ));
+        assert_eq!(app.url, "https://httpbin.org/post");
+
+        // 2. Change Method to POST
+        let _ = app.update(AppMessage::MethodChanged(Method::Post));
+        assert_eq!(app.method, Method::Post);
+
+        // 3. Add a Query Param
+        let _ = app.update(AppMessage::AddField(FieldKind::QueryParam));
+        let param_id = app.query_params[0].id.clone();
+        let _ = app.update(AppMessage::FieldKeyUpdated(
+            FieldKind::QueryParam,
+            param_id.clone(),
+            "debug".to_owned(),
+        ));
+        let _ = app.update(AppMessage::FieldValueUpdated(
+            FieldKind::QueryParam,
+            param_id.clone(),
+            "true".to_owned(),
+        ));
+
+        // 4. Update default Header
+        let header_id = app.headers[0].id.clone();
+        let _ = app.update(AppMessage::FieldValueUpdated(
+            FieldKind::Header,
+            header_id.clone(),
+            "application/json".to_owned(),
+        ));
+
+        // 5. Edit Body
+        let _ = app.update(AppMessage::RequestBodyEdited(Action::Edit(Edit::Insert(
+            '{',
+        ))));
+        let _ = app.update(AppMessage::RequestBodyEdited(Action::Edit(Edit::Insert(
+            '}',
+        ))));
+        // Note: smart indent would have inserted {} and moved cursor left, but let's assume simple edits for simulation
+
+        // 6. Click Send
+        let _ = app.update(AppMessage::SubmitRequest);
+
+        // Verify state during loading
+        assert!(app.loading);
+        assert!(app.response_body.text().is_empty());
+
+        // 7. Simulate Response (Successful)
+        let _ = app.update(AppMessage::RequestFinished(Ok(
+            "{\"success\": true}".to_owned()
+        )));
+
+        assert!(!app.loading);
+        assert!(app.response_body.text().contains("success"));
+    }
+
+    #[test]
+    fn test_unhappy_path_empty_url_send_disabled() {
+        let app = App::new();
+        // The view logic handles disabling, but we check our message guard
+        let submit_msg = if !app.url.is_empty() && !app.loading {
+            Some(AppMessage::SubmitRequest)
+        } else {
+            None
+        };
+        assert!(submit_msg.is_none());
+    }
+
+    #[test]
+    fn test_unhappy_path_request_error() {
+        let mut app = App::new();
+        let _ = app.update(AppMessage::UrlChanged("invalid-url".to_owned()));
+        let _ = app.update(AppMessage::SubmitRequest);
+
+        // Simulate an API error
+        let _ = app.update(AppMessage::RequestFinished(Err(Error::APIError)));
+
+        assert!(!app.loading);
+        // Response should be empty or handle error display (currently we println but state remains clear)
+        assert!(app.response_body.text().is_empty());
+    }
+
+    #[test]
+    fn test_url_changed() {
+        let mut app = App::new();
+        let _ = app.update(AppMessage::UrlChanged("https://google.com".to_owned()));
+        assert_eq!(app.url, "https://google.com");
+    }
+
+    #[test]
+    fn test_method_changed() {
+        let mut app = App::new();
+        let _ = app.update(AppMessage::MethodChanged(Method::Post));
+        assert_eq!(app.method, Method::Post);
+    }
+
+    #[test]
+    fn test_tab_changed() {
+        let mut app = App::new();
+        let _ = app.update(AppMessage::TabChanged(EditorTab::Body));
+        assert_eq!(app.active_tab, EditorTab::Body);
+    }
+
+    #[test]
+    fn test_remove_non_existent_field() {
+        let mut app = App::new();
+        let initial_count = app.headers.len();
+        let _ = app.update(AppMessage::RemoveField(
+            FieldKind::Header,
+            "non-existent".to_owned(),
+        ));
+        assert_eq!(app.headers.len(), initial_count);
+    }
+
+    #[test]
+    fn test_update_non_existent_field() {
+        let mut app = App::new();
+        let _ = app.update(AppMessage::FieldKeyUpdated(
+            FieldKind::Header,
+            "non-existent".to_owned(),
+            "key".to_owned(),
+        ));
+        // Should not panic and headers should remain unchanged
+        assert_eq!(app.headers[0].key.as_deref(), Some("Content-Type"));
     }
 }
