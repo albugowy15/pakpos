@@ -1,7 +1,7 @@
-use pakpos::app::AppState;
+use pakpos::app::App;
 
 fn main() -> iced::Result {
-    iced::application(AppState::new, AppState::update, AppState::view)
-        .title(AppState::title)
+    iced::application(App::new, App::update, App::view)
+        .title(App::title)
         .run()
 }
