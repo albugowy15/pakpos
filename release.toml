@@ -1,0 +1,30 @@
+# cargo-release configuration
+# https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+
+[pre-release-replacements]
+# Automatically update the version in the README if needed
+# { file="README.md", search="pakpos v[0-9.]+", replace="pakpos v{{version}}" },
+
+[release]
+# Run these commands before the release
+pre-release-hook = ["git cliff -o CHANGELOG.md --tag v{{version}}"]
+
+# Commit message for the version bump
+push = true
+push-remote = "origin"
+sign-commit = false
+sign-tag = false
+tag = true
+tag-name = "v{{version}}"
+tag-message = "chore(release): v{{version}}"
+
+# Files to include in the release commit
+# (Cargo.toml and Cargo.lock are included by default)
+# We add CHANGELOG.md here so it's committed with the version bump
+release-history = ["CHANGELOG.md"]
+
+# Ensure we don't accidentally publish to crates.io (this is a desktop app)
+publish = false
+
+# Optional: Run a build to make sure everything is okay
+# pre-release-commit-hook = ["cargo build --release"]
