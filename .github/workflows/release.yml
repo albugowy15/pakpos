@@ -50,9 +50,19 @@ jobs:
           cd target/${{ matrix.target }}/release
           7z a ../../../pakpos-${{ matrix.target }}.zip ${{ matrix.binary_name }}
 
+      - name: Generate Release Notes
+        id: changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: NEW_CHANGELOG.md
+
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
+          body_path: NEW_CHANGELOG.md
           files: |
             pakpos-*.tar.gz
             pakpos-*.zip
