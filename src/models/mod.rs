@@ -1,3 +1,5 @@
+pub mod request;
+
 use std::fmt;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq)]

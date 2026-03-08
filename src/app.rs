@@ -1,25 +1,27 @@
 use iced::{
-    Font, Length, font,
+    Color, Element, Font, Length, Task, Theme, font, highlighter,
     keyboard::{Key, key::Named},
-    padding,
     widget::{
-        button, center_x, column, pick_list, responsive, row, table, text, text_editor, text_input,
+        button, center_x, column, pick_list, responsive, row, scrollable, space, table, text,
+        text_editor, text_input,
     },
 };
 use uuid::Uuid;
 
-use crate::net::RequestTask;
 use crate::ui::indent::handle_smart_indent;
 use crate::{
     Error,
     models::{EDITOR_TABS, EditorTab, FieldKind, KeyValueField, METHODS, Method},
 };
+use crate::{models::request::Request, net::RequestTask};
 
 #[derive(Default)]
 pub struct App {
     method: Method,
     url: String,
     active_tab: EditorTab,
+    requests: Vec<Request>,
+    active_request_id: String,
     request_body: text_editor::Content,
     response_body: text_editor::Content,
     query_params: Vec<KeyValueField>,
@@ -33,19 +35,33 @@ pub enum AppMessage {
     UrlChanged(String),
     SubmitRequest,
     TabChanged(EditorTab),
+    ActiveRequestChanged(String),
     RequestBodyEdited(text_editor::Action),
     RequestFinished(Result<String, Error>),
     ResponseBodyEdited(text_editor::Action),
-
     FieldKeyUpdated(FieldKind, String, String),
     FieldValueUpdated(FieldKind, String, String),
     AddField(FieldKind),
     RemoveField(FieldKind, String),
+    AddRequest,
 }
 
 impl App {
     pub fn new() -> Self {
+        let requests = vec![
+            Request::new("First request".to_string()),
+            Request::new("Second Request".to_string()),
+            Request::new("Third Request".to_string()),
+            Request::new("Fourth Request".to_string()),
+            Request::new("Lorem dolor".to_string()),
+            Request::new("Sit amet consecturs".to_string()),
+        ];
+
+        let active_request_id = requests[0].id.clone();
+
         Self {
+            requests,
+            active_request_id,
             headers: vec![KeyValueField {
                 id: Uuid::new_v4().to_string(),
                 key: Some("Content-Type".to_owned()),
@@ -60,13 +76,14 @@ impl App {
 
     pub fn update(&mut self, message: AppMessage) -> iced::Task<AppMessage> {
         match message {
+            AppMessage::AddRequest => Task::none(),
             AppMessage::MethodChanged(method) => {
                 self.method = method;
-                iced::Task::none()
+                Task::none()
             }
             AppMessage::UrlChanged(url) => {
                 self.url = url;
-                iced::Task::none()
+                Task::none()
             }
             AppMessage::SubmitRequest => {
                 self.loading = true;
@@ -95,15 +112,19 @@ impl App {
                     .query_params(query_params)
                     .headers(headers);
 
-                iced::Task::perform(task.execute(), AppMessage::RequestFinished)
+                Task::perform(task.execute(), AppMessage::RequestFinished)
             }
             AppMessage::TabChanged(tab) => {
                 self.active_tab = tab;
-                iced::Task::none()
+                Task::none()
+            }
+            AppMessage::ActiveRequestChanged(id) => {
+                self.active_request_id = id;
+                Task::none()
             }
             AppMessage::RequestBodyEdited(action) => {
                 handle_smart_indent(&mut self.request_body, action);
-                iced::Task::none()
+                Task::none()
             }
             AppMessage::RequestFinished(response) => {
                 self.loading = false;
@@ -117,11 +138,11 @@ impl App {
                     }
                     Err(err) => println!("Failed: {:?}", err),
                 }
-                iced::Task::none()
+                Task::none()
             }
             AppMessage::ResponseBodyEdited(action) => {
                 handle_smart_indent(&mut self.response_body, action);
-                iced::Task::none()
+                Task::none()
             }
             AppMessage::FieldKeyUpdated(kind, id, val) => {
                 let rows = match kind {
@@ -131,7 +152,7 @@ impl App {
                 if let Some(row) = rows.iter_mut().find(|r| r.id == id) {
                     row.key = Some(val);
                 }
-                iced::Task::none()
+                Task::none()
             }
             AppMessage::FieldValueUpdated(kind, id, val) => {
                 let rows = match kind {
@@ -141,7 +162,7 @@ impl App {
                 if let Some(row) = rows.iter_mut().find(|r| r.id == id) {
                     row.value = Some(val);
                 }
-                iced::Task::none()
+                Task::none()
             }
             AppMessage::AddField(kind) => {
                 let rows = match kind {
@@ -153,7 +174,7 @@ impl App {
                     key: None,
                     value: None,
                 });
-                iced::Task::none()
+                Task::none()
             }
             AppMessage::RemoveField(kind, id) => {
                 let rows = match kind {
@@ -163,12 +184,12 @@ impl App {
                 if let Some(pos) = rows.iter().position(|row| row.id == id) {
                     rows.remove(pos);
                 }
-                iced::Task::none()
+                Task::none()
             }
         }
     }
 
-    fn render_kv_editor(&self, kind: FieldKind) -> iced::Element<'_, AppMessage> {
+    fn render_kv_editor(&self, kind: FieldKind) -> Element<'_, AppMessage> {
         let rows = match kind {
             FieldKind::QueryParam => &self.query_params,
             FieldKind::Header => &self.headers,
@@ -210,26 +231,28 @@ impl App {
                 }),
             ];
 
-            column!(
-                {
-                    if rows.is_empty() {
-                        None
-                    } else {
-                        Some(table(columns, rows).width(size.width).padding(5))
-                    }
-                },
-                button(add_label)
-                    .on_press(AppMessage::AddField(kind))
-                    .style(button::secondary)
+            scrollable(
+                column!(
+                    {
+                        if rows.is_empty() {
+                            None
+                        } else {
+                            Some(table(columns, rows).width(size.width).padding(5))
+                        }
+                    },
+                    button(add_label)
+                        .on_press(AppMessage::AddField(kind))
+                        .style(button::secondary)
+                )
+                .width(size.width)
+                .spacing(5),
             )
-            .width(size.width)
-            .spacing(5)
             .into()
         })
         .into()
     }
 
-    pub fn view(&self) -> iced::Element<'_, AppMessage> {
+    pub fn view(&self) -> Element<'_, AppMessage> {
         let submit_msg = if !self.url.is_empty() && !self.loading {
             Some(AppMessage::SubmitRequest)
         } else {
@@ -242,66 +265,96 @@ impl App {
             "Send"
         };
 
-        let tab_editor_content_height = 400;
-
-        let active_tab_content: iced::Element<'_, AppMessage> = match self.active_tab {
-            EditorTab::Body => text_editor(&self.request_body)
-                .placeholder("Request Body")
-                .on_action(AppMessage::RequestBodyEdited)
-                .highlight("json", iced::highlighter::Theme::SolarizedDark)
-                .key_binding(|event| {
-                    if event.key == Key::Named(Named::Tab) {
-                        Some(text_editor::Binding::Insert('\t'))
-                    } else {
-                        text_editor::Binding::from_key_press(event)
-                    }
-                })
-                .size(14)
-                .padding(10)
-                .height(tab_editor_content_height)
-                .into(),
+        let active_tab_content: Element<'_, AppMessage> = match self.active_tab {
+            EditorTab::Body => responsive(move |size| {
+                text_editor(&self.request_body)
+                    .placeholder("Request Body")
+                    .on_action(AppMessage::RequestBodyEdited)
+                    .highlight("json", highlighter::Theme::SolarizedDark)
+                    .key_binding(|event| {
+                        if event.key == Key::Named(Named::Tab) {
+                            Some(text_editor::Binding::Insert('\t'))
+                        } else {
+                            text_editor::Binding::from_key_press(event)
+                        }
+                    })
+                    .size(14)
+                    .padding(10)
+                    .height(size.height)
+                    .into()
+            })
+            .into(),
             EditorTab::Params => self.render_kv_editor(FieldKind::QueryParam),
             EditorTab::Headers => self.render_kv_editor(FieldKind::Header),
         };
 
-        column!(
-            row!(
-                pick_list(METHODS, Some(self.method), AppMessage::MethodChanged)
-                    .placeholder("HTTP Method"),
-                text_input("URL...", &self.url).on_input(AppMessage::UrlChanged),
-                button(button_label).on_press_maybe(submit_msg),
+        row!(
+            column!(
+                row!(
+                    text("Demo request collection"),
+                    button("+")
+                        .style(button::primary)
+                        .on_press(AppMessage::AddRequest)
+                ),
+                space::vertical().height(20),
+                column(self.requests.iter().map(|item| {
+                    let id = item.id.clone();
+                    button(text(item.title.to_owned()).color(Color::WHITE).size(14))
+                        .style(move |theme, status| {
+                            if self.active_request_id == id {
+                                return button::subtle(theme, status);
+                            } else {
+                                return button::text(theme, status);
+                            }
+                        })
+                        .padding([8, 16])
+                        .width(Length::Fill)
+                        .on_press(AppMessage::ActiveRequestChanged(item.id.clone()))
+                        .into()
+                }),)
+                .spacing(8),
             )
-            .spacing(5),
-            row(EDITOR_TABS.map(|tab| {
-                button(text!("{tab}"))
-                    .style(move |theme: &iced::Theme, status| {
-                        if self.active_tab == tab {
-                            button::subtle(theme, status)
+            .padding(10)
+            .width(500),
+            column!(
+                row!(
+                    pick_list(METHODS, Some(self.method), AppMessage::MethodChanged)
+                        .placeholder("HTTP Method"),
+                    text_input("URL...", &self.url).on_input(AppMessage::UrlChanged),
+                    button(button_label).on_press_maybe(submit_msg),
+                )
+                .spacing(5),
+                row(EDITOR_TABS.map(|tab| {
+                    button(text!("{tab}"))
+                        .style(move |theme: &Theme, status| {
+                            if self.active_tab == tab {
+                                button::subtle(theme, status)
+                            } else {
+                                button::text(theme, status)
+                            }
+                        })
+                        .on_press(AppMessage::TabChanged(tab))
+                        .into()
+                }))
+                .spacing(10),
+                active_tab_content,
+                text_editor(&self.response_body)
+                    .height(600)
+                    .highlight("json", highlighter::Theme::SolarizedDark)
+                    .on_action(AppMessage::ResponseBodyEdited)
+                    .key_binding(|event| {
+                        if event.key == Key::Named(Named::Tab) {
+                            Some(text_editor::Binding::Insert('\t'))
                         } else {
-                            button::text(theme, status)
+                            text_editor::Binding::from_key_press(event)
                         }
                     })
-                    .on_press(AppMessage::TabChanged(tab))
-                    .into()
-            }))
-            .spacing(10),
-            active_tab_content,
-            text_editor(&self.response_body)
-                .height(400)
-                .highlight("json", iced::highlighter::Theme::SolarizedDark)
-                .on_action(AppMessage::ResponseBodyEdited)
-                .key_binding(|event| {
-                    if event.key == Key::Named(Named::Tab) {
-                        Some(text_editor::Binding::Insert('\t'))
-                    } else {
-                        text_editor::Binding::from_key_press(event)
-                    }
-                })
-                .size(14)
-                .padding(padding::left(10))
+                    .size(14)
+                    .padding(10)
+            )
+            .spacing(10)
+            .padding(10)
         )
-        .spacing(10)
-        .padding(10)
         .into()
     }
 }
