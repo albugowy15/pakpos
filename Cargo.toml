@@ -4,10 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.14.0", features = ["highlighter", "tokio"] }
+iced = { version = "0.14.0", default-features = false, features = [
+  "crisp",
+  "highlighter",
+  "thread-pool",
+  "linux-theme-detection",
+  "tiny-skia",
+  "tokio",
+  "wayland",
+  "web-colors",
+  "x11",
+] }
 serde = { version = "1.0" }
 serde_json = "1.0"
-reqwest = { version = "0.13.2", features = ["query"] }
+reqwest = { version = "0.13.2", default-features = false, features = [
+  "query",
+  "rustls",
+] }
 uuid = { version = "1.21.0", features = ["v4"] }
 
 [profile.release]
