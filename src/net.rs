@@ -70,7 +70,7 @@ impl RequestTask {
         let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");
         let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
         parsed.serialize(&mut ser)?;
-        Ok(String::from_utf8(buf).map_err(|_| Error::SerdeError)?)
+        Ok(String::from_utf8(buf).map_err(|_| Error::Serde)?)
     }
 }
 

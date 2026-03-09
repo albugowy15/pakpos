@@ -1,82 +1,254 @@
+use std::collections::HashMap;
+
 use iced::{
-    Color, Element, Font, Length, Task, Theme, font, highlighter,
+    Alignment, Color, Element, Font, Length, Task, Theme, font, highlighter,
     keyboard::{Key, key::Named},
     widget::{
-        button, center_x, column, pick_list, responsive, row, scrollable, space, table, text,
+        button, center, column, pick_list, responsive, row, scrollable, space, svg, table, text,
         text_editor, text_input,
     },
 };
 use uuid::Uuid;
 
-use crate::ui::indent::handle_smart_indent;
+use crate::ui::{self, indent::handle_smart_indent};
 use crate::{
     Error,
     models::{EDITOR_TABS, EditorTab, FieldKind, KeyValueField, METHODS, Method},
 };
-use crate::{models::request::Request, net::RequestTask};
+use crate::{
+    models::request::{FindRequest, Request},
+    models::workspace::Workspace,
+    net::RequestTask,
+    storage::Storage,
+};
 
-#[derive(Default)]
 pub struct App {
+    storage: Storage,
     method: Method,
     url: String,
     active_tab: EditorTab,
+    // Workspace state
+    workspaces: Vec<Workspace>,
+    active_workspace_id: String,
+    workspace_title: String,
+    // Request state
+    search_query: String,
     requests: Vec<Request>,
     active_request_id: String,
+    request_title: String,
     request_body: text_editor::Content,
     response_body: text_editor::Content,
     query_params: Vec<KeyValueField>,
     headers: Vec<KeyValueField>,
+    responses: HashMap<String, String>,
     loading: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum AppMessage {
+    // Workspace
+    WorkspaceAdded,
+    ActiveWorkspaceChanged(Workspace),
+    WorkspaceTitleChanged(String),
+    // Request
+    SearchQueryChanged(String),
+    RequestAdded,
+    ActiveRequestChanged(String),
+    RequestTitleChanged(String),
+    RequestSubmitted,
+    RequestFinished(Result<String, Error>),
+    // Editor
     MethodChanged(Method),
     UrlChanged(String),
-    SubmitRequest,
     TabChanged(EditorTab),
-    ActiveRequestChanged(String),
     RequestBodyEdited(text_editor::Action),
-    RequestFinished(Result<String, Error>),
     ResponseBodyEdited(text_editor::Action),
-    FieldKeyUpdated(FieldKind, String, String),
-    FieldValueUpdated(FieldKind, String, String),
-    AddField(FieldKind),
-    RemoveField(FieldKind, String),
-    AddRequest,
+    // Fields (params & headers)
+    FieldAdded(FieldKind),
+    FieldRemoved(FieldKind, String),
+    FieldKeyChanged(FieldKind, String, String),
+    FieldValueChanged(FieldKind, String, String),
 }
 
 impl App {
     pub fn new() -> Self {
-        let requests = vec![
-            Request::new("First request".to_string()),
-            Request::new("Second Request".to_string()),
-            Request::new("Third Request".to_string()),
-            Request::new("Fourth Request".to_string()),
-            Request::new("Lorem dolor".to_string()),
-            Request::new("Sit amet consecturs".to_string()),
-        ];
-
-        let active_request_id = requests[0].id.clone();
-
-        Self {
-            requests,
-            active_request_id,
-            headers: vec![KeyValueField {
-                id: Uuid::new_v4().to_string(),
-                key: Some("Content-Type".to_owned()),
-                value: Some("application/json".to_owned()),
-            }],
-            ..Default::default()
-        }
+        Self::with_storage(Storage::default_path())
     }
+
+    fn with_storage(storage: Storage) -> Self {
+        let mut app = Self {
+            storage,
+            method: Method::default(),
+            url: String::new(),
+            active_tab: EditorTab::default(),
+            workspaces: Vec::new(),
+            active_workspace_id: String::new(),
+            workspace_title: String::new(),
+            search_query: String::new(),
+            requests: Vec::new(),
+            active_request_id: String::new(),
+            request_title: String::new(),
+            request_body: text_editor::Content::new(),
+            response_body: text_editor::Content::new(),
+            query_params: Vec::new(),
+            headers: Vec::new(),
+            responses: std::collections::HashMap::new(),
+            loading: false,
+        };
+
+        app.workspaces = app.storage.load_all_workspaces();
+
+        if app.workspaces.is_empty() {
+            let ws = Workspace::new(String::from("My Workspace"));
+            app.storage.save_workspace(&ws);
+            app.active_workspace_id = ws.id.clone();
+            app.workspace_title = ws.title.clone();
+            app.workspaces.push(ws);
+        } else {
+            let first = &app.workspaces[0];
+            app.active_workspace_id = first.id.clone();
+            app.workspace_title = first.title.clone();
+        }
+
+        app.load_workspace_requests();
+
+        app
+    }
+
     pub fn title(&self) -> String {
         String::from("Pakpos")
     }
 
-    pub fn update(&mut self, message: AppMessage) -> iced::Task<AppMessage> {
+    fn load_workspace_requests(&mut self) {
+        self.search_query.clear();
+        self.requests.clear();
+        self.responses.clear();
+        self.active_request_id.clear();
+        self.reset_editor_state();
+
+        let loaded = self.storage.load_all_requests(&self.active_workspace_id);
+        for (request, response) in loaded {
+            if let Some(resp) = response {
+                self.responses.insert(request.id.clone(), resp);
+            }
+            self.requests.push(request);
+        }
+
+        if let Some(first) = self.requests.first() {
+            let id = first.id.clone();
+            self.active_request_id = id.clone();
+            self.load_request(&id);
+        }
+    }
+
+    fn reset_editor_state(&mut self) {
+        self.method = Method::default();
+        self.url.clear();
+        self.request_title.clear();
+        self.query_params.clear();
+        self.headers.clear();
+        self.request_body = text_editor::Content::new();
+        self.response_body = text_editor::Content::new();
+    }
+
+    fn save_active_request(&mut self) {
+        if let Some(req) = self.requests.find_by_id_mut(&self.active_request_id) {
+            req.method = self.method;
+            req.url = if self.url.is_empty() {
+                None
+            } else {
+                Some(self.url.clone())
+            };
+            req.query_params = self.query_params.clone();
+            req.headers = self.headers.clone();
+            let body_text = self.request_body.text();
+            let body_trimmed = body_text.trim();
+            req.body = if body_trimmed.is_empty() {
+                None
+            } else {
+                Some(body_trimmed.to_owned())
+            };
+            let response = self
+                .responses
+                .get(&self.active_request_id)
+                .map(|s| s.as_str());
+            self.storage
+                .save_request(&self.active_workspace_id, req, response);
+        }
+    }
+
+    fn load_request(&mut self, id: &str) {
+        if let Some(req) = self.requests.find_by_id(id) {
+            self.method = req.method;
+            self.url = req.url.clone().unwrap_or_default();
+            self.request_title = req.title.clone();
+            self.query_params = req.query_params.clone();
+            self.headers = req.headers.clone();
+            self.request_body = text_editor::Content::new();
+            if let Some(body) = &req.body {
+                self.request_body
+                    .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
+                        std::sync::Arc::new(body.clone()),
+                    )));
+            }
+            self.response_body = text_editor::Content::new();
+            if let Some(resp) = self.responses.get(id) {
+                self.response_body
+                    .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
+                        std::sync::Arc::new(resp.clone()),
+                    )));
+            }
+        }
+    }
+
+    pub fn update(&mut self, message: AppMessage) -> Task<AppMessage> {
         match message {
-            AppMessage::AddRequest => Task::none(),
+            AppMessage::WorkspaceAdded => {
+                self.save_active_request();
+                let ws = Workspace::new(String::from("New Workspace"));
+                self.storage.save_workspace(&ws);
+                self.active_workspace_id = ws.id.clone();
+                self.workspace_title = ws.title.clone();
+                self.workspaces.push(ws);
+                self.load_workspace_requests();
+                Task::none()
+            }
+            AppMessage::ActiveWorkspaceChanged(ws) => {
+                if ws.id == self.active_workspace_id {
+                    return Task::none();
+                }
+                self.save_active_request();
+                self.active_workspace_id = ws.id.clone();
+                self.workspace_title = ws.title.clone();
+                self.load_workspace_requests();
+                Task::none()
+            }
+            AppMessage::WorkspaceTitleChanged(title) => {
+                if let Some(ws) = self
+                    .workspaces
+                    .iter_mut()
+                    .find(|w| w.id == self.active_workspace_id)
+                {
+                    ws.title = title.clone();
+                    self.storage.save_workspace(ws);
+                }
+                self.workspace_title = title;
+                Task::none()
+            }
+            AppMessage::SearchQueryChanged(query) => {
+                self.search_query = query;
+                Task::none()
+            }
+            AppMessage::RequestAdded => {
+                self.save_active_request();
+                let new_request = Request::new(String::from("New Request"));
+                self.active_request_id = new_request.id.clone();
+                self.storage
+                    .save_request(&self.active_workspace_id, &new_request, None);
+                self.requests.push(new_request);
+                self.load_request(&self.active_request_id.clone());
+                Task::none()
+            }
             AppMessage::MethodChanged(method) => {
                 self.method = method;
                 Task::none()
@@ -85,7 +257,7 @@ impl App {
                 self.url = url;
                 Task::none()
             }
-            AppMessage::SubmitRequest => {
+            AppMessage::RequestSubmitted => {
                 self.loading = true;
                 self.response_body = text_editor::Content::new();
 
@@ -119,7 +291,9 @@ impl App {
                 Task::none()
             }
             AppMessage::ActiveRequestChanged(id) => {
-                self.active_request_id = id;
+                self.save_active_request();
+                self.active_request_id = id.clone();
+                self.load_request(&id);
                 Task::none()
             }
             AppMessage::RequestBodyEdited(action) => {
@@ -131,10 +305,12 @@ impl App {
                 self.response_body = text_editor::Content::new();
                 match response {
                     Ok(result) => {
-                        println!("Response: {}", result);
                         self.response_body.perform(text_editor::Action::Edit(
-                            text_editor::Edit::Paste(std::sync::Arc::new(result)),
+                            text_editor::Edit::Paste(std::sync::Arc::new(result.clone())),
                         ));
+                        self.responses
+                            .insert(self.active_request_id.clone(), result);
+                        self.save_active_request();
                     }
                     Err(err) => println!("Failed: {:?}", err),
                 }
@@ -144,7 +320,7 @@ impl App {
                 handle_smart_indent(&mut self.response_body, action);
                 Task::none()
             }
-            AppMessage::FieldKeyUpdated(kind, id, val) => {
+            AppMessage::FieldKeyChanged(kind, id, val) => {
                 let rows = match kind {
                     FieldKind::QueryParam => &mut self.query_params,
                     FieldKind::Header => &mut self.headers,
@@ -154,7 +330,7 @@ impl App {
                 }
                 Task::none()
             }
-            AppMessage::FieldValueUpdated(kind, id, val) => {
+            AppMessage::FieldValueChanged(kind, id, val) => {
                 let rows = match kind {
                     FieldKind::QueryParam => &mut self.query_params,
                     FieldKind::Header => &mut self.headers,
@@ -164,7 +340,7 @@ impl App {
                 }
                 Task::none()
             }
-            AppMessage::AddField(kind) => {
+            AppMessage::FieldAdded(kind) => {
                 let rows = match kind {
                     FieldKind::QueryParam => &mut self.query_params,
                     FieldKind::Header => &mut self.headers,
@@ -176,7 +352,7 @@ impl App {
                 });
                 Task::none()
             }
-            AppMessage::RemoveField(kind, id) => {
+            AppMessage::FieldRemoved(kind, id) => {
                 let rows = match kind {
                     FieldKind::QueryParam => &mut self.query_params,
                     FieldKind::Header => &mut self.headers,
@@ -184,6 +360,18 @@ impl App {
                 if let Some(pos) = rows.iter().position(|row| row.id == id) {
                     rows.remove(pos);
                 }
+                Task::none()
+            }
+            AppMessage::RequestTitleChanged(title) => {
+                if let Some(req) = self
+                    .requests
+                    .iter_mut()
+                    .find(|r| r.id == self.active_request_id)
+                {
+                    req.title = title.clone();
+                }
+                self.request_title = title;
+                self.save_active_request();
                 Task::none()
             }
         }
@@ -210,24 +398,29 @@ impl App {
             let columns = [
                 table::column(bold("Key"), move |row: &KeyValueField| {
                     text_input("Key", row.key.as_deref().unwrap_or_default())
-                        .on_input(move |val| AppMessage::FieldKeyUpdated(kind, row.id.clone(), val))
+                        .on_input(move |val| AppMessage::FieldKeyChanged(kind, row.id.clone(), val))
                         .width(Length::Fill)
                 })
                 .width(Length::Fill),
                 table::column(bold("Value"), move |row: &KeyValueField| {
                     text_input("Value", row.value.as_deref().unwrap_or_default())
                         .on_input(move |val| {
-                            AppMessage::FieldValueUpdated(kind, row.id.clone(), val)
+                            AppMessage::FieldValueChanged(kind, row.id.clone(), val)
                         })
                         .width(Length::Fill)
                 })
                 .width(Length::Fill),
-                table::column("Action", move |row: &KeyValueField| {
-                    center_x(
-                        button("del")
-                            .on_press(AppMessage::RemoveField(kind, row.id.clone()))
-                            .style(button::danger),
+                table::column(bold("Action"), move |row: &KeyValueField| {
+                    button(
+                        svg("assets/icon/trash.svg")
+                            .style(|_theme, _status| svg::Style {
+                                color: Some(Color::WHITE),
+                            })
+                            .width(18)
+                            .height(18),
                     )
+                    .on_press(AppMessage::FieldRemoved(kind, row.id.clone()))
+                    .style(button::danger)
                 }),
             ];
 
@@ -240,9 +433,7 @@ impl App {
                             Some(table(columns, rows).width(size.width).padding(5))
                         }
                     },
-                    button(add_label)
-                        .on_press(AppMessage::AddField(kind))
-                        .style(button::secondary)
+                    button(add_label).on_press(AppMessage::FieldAdded(kind))
                 )
                 .width(size.width)
                 .spacing(5),
@@ -254,7 +445,7 @@ impl App {
 
     pub fn view(&self) -> Element<'_, AppMessage> {
         let submit_msg = if !self.url.is_empty() && !self.loading {
-            Some(AppMessage::SubmitRequest)
+            Some(AppMessage::RequestSubmitted)
         } else {
             None
         };
@@ -288,72 +479,138 @@ impl App {
             EditorTab::Headers => self.render_kv_editor(FieldKind::Header),
         };
 
+        let active_workspace = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == self.active_workspace_id)
+            .cloned();
+
         row!(
             column!(
                 row!(
-                    text("Demo request collection"),
+                    pick_list(
+                        self.workspaces.clone(),
+                        active_workspace,
+                        AppMessage::ActiveWorkspaceChanged,
+                    )
+                    .width(Length::Fill),
                     button("+")
                         .style(button::primary)
-                        .on_press(AppMessage::AddRequest)
-                ),
-                space::vertical().height(20),
-                column(self.requests.iter().map(|item| {
-                    let id = item.id.clone();
-                    button(text(item.title.to_owned()).color(Color::WHITE).size(14))
-                        .style(move |theme, status| {
-                            if self.active_request_id == id {
-                                return button::subtle(theme, status);
-                            } else {
-                                return button::text(theme, status);
-                            }
+                        .on_press(AppMessage::WorkspaceAdded),
+                )
+                .spacing(5)
+                .align_y(Alignment::Center),
+                space::vertical().height(10),
+                row!(
+                    text_input("Search requests...", &self.search_query)
+                        .on_input(AppMessage::SearchQueryChanged)
+                        .size(14)
+                        .width(Length::Fill),
+                    space::horizontal().width(5),
+                    button("+")
+                        .style(button::primary)
+                        .on_press(AppMessage::RequestAdded),
+                )
+                .align_y(Alignment::Center),
+                column(
+                    self.requests
+                        .iter()
+                        .filter(|item| {
+                            self.search_query.is_empty()
+                                || item
+                                    .title
+                                    .to_lowercase()
+                                    .contains(&self.search_query.to_lowercase())
+                                || item
+                                    .url
+                                    .as_deref()
+                                    .unwrap_or_default()
+                                    .to_lowercase()
+                                    .contains(&self.search_query.to_lowercase())
+                                || item
+                                    .method
+                                    .to_string()
+                                    .to_lowercase()
+                                    .contains(&self.search_query.to_lowercase())
                         })
-                        .padding([8, 16])
-                        .width(Length::Fill)
-                        .on_press(AppMessage::ActiveRequestChanged(item.id.clone()))
-                        .into()
-                }),)
+                        .map(|item| {
+                            let id = item.id.clone();
+                            button(text(item.title.to_owned()).size(14))
+                                .style(move |theme, status| {
+                                    if self.active_request_id == id {
+                                        ui::button::background(theme, status)
+                                    } else {
+                                        button::text(theme, status)
+                                    }
+                                })
+                                .padding([8, 16])
+                                .width(Length::Fill)
+                                .on_press(AppMessage::ActiveRequestChanged(item.id.clone()))
+                                .into()
+                        }),
+                )
                 .spacing(8),
             )
             .padding(10)
+            .spacing(4)
             .width(500),
-            column!(
-                row!(
-                    pick_list(METHODS, Some(self.method), AppMessage::MethodChanged)
-                        .placeholder("HTTP Method"),
-                    text_input("URL...", &self.url).on_input(AppMessage::UrlChanged),
-                    button(button_label).on_press_maybe(submit_msg),
+            if self.active_request_id.is_empty() {
+                Element::from(
+                    center(text("Choose a request to edit"))
+                        .width(Length::Fill)
+                        .height(Length::Fill),
                 )
-                .spacing(5),
-                row(EDITOR_TABS.map(|tab| {
-                    button(text!("{tab}"))
-                        .style(move |theme: &Theme, status| {
-                            if self.active_tab == tab {
-                                button::subtle(theme, status)
+            } else {
+                column!(
+                    row!(
+                        text(self.workspace_title.as_str()).size(14),
+                        text("/").size(14),
+                        text_input("", &self.request_title)
+                            .on_input(AppMessage::RequestTitleChanged)
+                            .size(14)
+                            .width(300)
+                    )
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                    row!(
+                        pick_list(METHODS, Some(self.method), AppMessage::MethodChanged)
+                            .placeholder("HTTP Method"),
+                        text_input("URL...", &self.url).on_input(AppMessage::UrlChanged),
+                        button(button_label).on_press_maybe(submit_msg),
+                    )
+                    .spacing(5),
+                    row(EDITOR_TABS.map(|tab| {
+                        button(text!("{tab}"))
+                            .style(move |theme: &Theme, status| {
+                                if self.active_tab == tab {
+                                    button::subtle(theme, status)
+                                } else {
+                                    button::text(theme, status)
+                                }
+                            })
+                            .on_press(AppMessage::TabChanged(tab))
+                            .into()
+                    }))
+                    .spacing(10),
+                    active_tab_content,
+                    text_editor(&self.response_body)
+                        .height(600)
+                        .highlight("json", highlighter::Theme::SolarizedDark)
+                        .on_action(AppMessage::ResponseBodyEdited)
+                        .key_binding(|event| {
+                            if event.key == Key::Named(Named::Tab) {
+                                Some(text_editor::Binding::Insert('\t'))
                             } else {
-                                button::text(theme, status)
+                                text_editor::Binding::from_key_press(event)
                             }
                         })
-                        .on_press(AppMessage::TabChanged(tab))
-                        .into()
-                }))
-                .spacing(10),
-                active_tab_content,
-                text_editor(&self.response_body)
-                    .height(600)
-                    .highlight("json", highlighter::Theme::SolarizedDark)
-                    .on_action(AppMessage::ResponseBodyEdited)
-                    .key_binding(|event| {
-                        if event.key == Key::Named(Named::Tab) {
-                            Some(text_editor::Binding::Insert('\t'))
-                        } else {
-                            text_editor::Binding::from_key_press(event)
-                        }
-                    })
-                    .size(14)
-                    .padding(10)
-            )
-            .spacing(10)
-            .padding(10)
+                        .size(14)
+                        .padding(10)
+                )
+                .spacing(10)
+                .padding(10)
+                .into()
+            }
         )
         .into()
     }
@@ -363,52 +620,73 @@ impl App {
 mod tests {
     use super::*;
     use iced::widget::text_editor::{Action, Edit};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_app() -> App {
+        let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let storage = Storage::new(PathBuf::from(format!(
+            "/tmp/pakpos-app-test-{}-{}",
+            std::process::id(),
+            n
+        )));
+        App::with_storage(storage)
+    }
+
+    /// Creates an App with one request already added and active.
+    fn app_with_request() -> App {
+        let mut app = test_app();
+        let _ = app.update(AppMessage::RequestAdded);
+        app
+    }
 
     #[test]
     fn test_add_param_row() {
-        let mut app = App::new();
+        let mut app = test_app();
         let initial_count = app.query_params.len();
-        let _ = app.update(AppMessage::AddField(FieldKind::QueryParam));
+        let _ = app.update(AppMessage::FieldAdded(FieldKind::QueryParam));
         assert_eq!(app.query_params.len(), initial_count + 1);
     }
 
     #[test]
     fn test_remove_param_row() {
-        let mut app = App::new();
-        let _ = app.update(AppMessage::AddField(FieldKind::QueryParam));
+        let mut app = test_app();
+        let _ = app.update(AppMessage::FieldAdded(FieldKind::QueryParam));
         let id = app.query_params[0].id.clone();
-        let _ = app.update(AppMessage::RemoveField(FieldKind::QueryParam, id));
+        let _ = app.update(AppMessage::FieldRemoved(FieldKind::QueryParam, id));
         assert_eq!(app.query_params.len(), 0);
     }
 
     #[test]
     fn test_add_header_row() {
-        let mut app = App::new();
+        let mut app = test_app();
         let initial_count = app.headers.len();
-        let _ = app.update(AppMessage::AddField(FieldKind::Header));
+        let _ = app.update(AppMessage::FieldAdded(FieldKind::Header));
         assert_eq!(app.headers.len(), initial_count + 1);
     }
 
     #[test]
     fn test_remove_header_row() {
-        let mut app = App::new();
-        let _ = app.update(AppMessage::AddField(FieldKind::Header));
+        let mut app = app_with_request();
+        let _ = app.update(AppMessage::FieldAdded(FieldKind::Header));
         let id = app.headers[0].id.clone();
-        let _ = app.update(AppMessage::RemoveField(FieldKind::Header, id));
+        let _ = app.update(AppMessage::FieldRemoved(FieldKind::Header, id));
         assert_eq!(app.headers.len(), 1);
     }
 
     #[test]
     fn test_update_param_key_value() {
-        let mut app = App::new();
-        let _ = app.update(AppMessage::AddField(FieldKind::QueryParam));
+        let mut app = test_app();
+        let _ = app.update(AppMessage::FieldAdded(FieldKind::QueryParam));
         let id = app.query_params[0].id.clone();
-        let _ = app.update(AppMessage::FieldKeyUpdated(
+        let _ = app.update(AppMessage::FieldKeyChanged(
             FieldKind::QueryParam,
             id.clone(),
             "name".to_owned(),
         ));
-        let _ = app.update(AppMessage::FieldValueUpdated(
+        let _ = app.update(AppMessage::FieldValueChanged(
             FieldKind::QueryParam,
             id.clone(),
             "pikachu".to_owned(),
@@ -419,14 +697,14 @@ mod tests {
 
     #[test]
     fn test_update_header_key_value() {
-        let mut app = App::new();
+        let mut app = app_with_request();
         let id = app.headers[0].id.clone();
-        let _ = app.update(AppMessage::FieldKeyUpdated(
+        let _ = app.update(AppMessage::FieldKeyChanged(
             FieldKind::Header,
             id.clone(),
             "X-Test".to_owned(),
         ));
-        let _ = app.update(AppMessage::FieldValueUpdated(
+        let _ = app.update(AppMessage::FieldValueChanged(
             FieldKind::Header,
             id.clone(),
             "Value".to_owned(),
@@ -437,7 +715,7 @@ mod tests {
 
     #[test]
     fn test_full_request_flow_e2e_simulation() {
-        let mut app = App::new();
+        let mut app = app_with_request();
 
         // 1. Set URL
         let _ = app.update(AppMessage::UrlChanged(
@@ -450,14 +728,14 @@ mod tests {
         assert_eq!(app.method, Method::Post);
 
         // 3. Add a Query Param
-        let _ = app.update(AppMessage::AddField(FieldKind::QueryParam));
+        let _ = app.update(AppMessage::FieldAdded(FieldKind::QueryParam));
         let param_id = app.query_params[0].id.clone();
-        let _ = app.update(AppMessage::FieldKeyUpdated(
+        let _ = app.update(AppMessage::FieldKeyChanged(
             FieldKind::QueryParam,
             param_id.clone(),
             "debug".to_owned(),
         ));
-        let _ = app.update(AppMessage::FieldValueUpdated(
+        let _ = app.update(AppMessage::FieldValueChanged(
             FieldKind::QueryParam,
             param_id.clone(),
             "true".to_owned(),
@@ -465,7 +743,7 @@ mod tests {
 
         // 4. Update default Header
         let header_id = app.headers[0].id.clone();
-        let _ = app.update(AppMessage::FieldValueUpdated(
+        let _ = app.update(AppMessage::FieldValueChanged(
             FieldKind::Header,
             header_id.clone(),
             "application/json".to_owned(),
@@ -478,10 +756,9 @@ mod tests {
         let _ = app.update(AppMessage::RequestBodyEdited(Action::Edit(Edit::Insert(
             '}',
         ))));
-        // Note: smart indent would have inserted {} and moved cursor left, but let's assume simple edits for simulation
 
         // 6. Click Send
-        let _ = app.update(AppMessage::SubmitRequest);
+        let _ = app.update(AppMessage::RequestSubmitted);
 
         // Verify state during loading
         assert!(app.loading);
@@ -498,10 +775,9 @@ mod tests {
 
     #[test]
     fn test_unhappy_path_empty_url_send_disabled() {
-        let app = App::new();
-        // The view logic handles disabling, but we check our message guard
+        let app = test_app();
         let submit_msg = if !app.url.is_empty() && !app.loading {
-            Some(AppMessage::SubmitRequest)
+            Some(AppMessage::RequestSubmitted)
         } else {
             None
         };
@@ -510,44 +786,42 @@ mod tests {
 
     #[test]
     fn test_unhappy_path_request_error() {
-        let mut app = App::new();
+        let mut app = test_app();
         let _ = app.update(AppMessage::UrlChanged("invalid-url".to_owned()));
-        let _ = app.update(AppMessage::SubmitRequest);
+        let _ = app.update(AppMessage::RequestSubmitted);
 
-        // Simulate an API error
-        let _ = app.update(AppMessage::RequestFinished(Err(Error::APIError)));
+        let _ = app.update(AppMessage::RequestFinished(Err(Error::Api)));
 
         assert!(!app.loading);
-        // Response should be empty or handle error display (currently we println but state remains clear)
         assert!(app.response_body.text().is_empty());
     }
 
     #[test]
     fn test_url_changed() {
-        let mut app = App::new();
+        let mut app = test_app();
         let _ = app.update(AppMessage::UrlChanged("https://google.com".to_owned()));
         assert_eq!(app.url, "https://google.com");
     }
 
     #[test]
     fn test_method_changed() {
-        let mut app = App::new();
+        let mut app = test_app();
         let _ = app.update(AppMessage::MethodChanged(Method::Post));
         assert_eq!(app.method, Method::Post);
     }
 
     #[test]
     fn test_tab_changed() {
-        let mut app = App::new();
+        let mut app = test_app();
         let _ = app.update(AppMessage::TabChanged(EditorTab::Body));
         assert_eq!(app.active_tab, EditorTab::Body);
     }
 
     #[test]
     fn test_remove_non_existent_field() {
-        let mut app = App::new();
+        let mut app = test_app();
         let initial_count = app.headers.len();
-        let _ = app.update(AppMessage::RemoveField(
+        let _ = app.update(AppMessage::FieldRemoved(
             FieldKind::Header,
             "non-existent".to_owned(),
         ));
@@ -556,13 +830,48 @@ mod tests {
 
     #[test]
     fn test_update_non_existent_field() {
-        let mut app = App::new();
-        let _ = app.update(AppMessage::FieldKeyUpdated(
+        let mut app = app_with_request();
+        let _ = app.update(AppMessage::FieldKeyChanged(
             FieldKind::Header,
             "non-existent".to_owned(),
             "key".to_owned(),
         ));
-        // Should not panic and headers should remain unchanged
         assert_eq!(app.headers[0].key.as_deref(), Some("Content-Type"));
+    }
+
+    #[test]
+    fn test_add_workspace() {
+        let mut app = test_app();
+        let initial_count = app.workspaces.len();
+        let _ = app.update(AppMessage::WorkspaceAdded);
+        assert_eq!(app.workspaces.len(), initial_count + 1);
+        assert!(app.requests.is_empty());
+    }
+
+    #[test]
+    fn test_switch_workspace() {
+        let mut app = test_app();
+        let first_ws = app.workspaces[0].clone();
+
+        // Add a request to first workspace
+        let _ = app.update(AppMessage::RequestAdded);
+        assert_eq!(app.requests.len(), 1);
+
+        // Create second workspace
+        let _ = app.update(AppMessage::WorkspaceAdded);
+        assert_ne!(first_ws.id, app.active_workspace_id);
+        assert!(app.requests.is_empty());
+
+        // Switch back to first workspace
+        let _ = app.update(AppMessage::ActiveWorkspaceChanged(first_ws));
+        assert_eq!(app.requests.len(), 1);
+    }
+
+    #[test]
+    fn test_workspace_title_changed() {
+        let mut app = test_app();
+        let _ = app.update(AppMessage::WorkspaceTitleChanged("Renamed".to_owned()));
+        assert_eq!(app.workspace_title, "Renamed");
+        assert_eq!(app.workspaces[0].title, "Renamed");
     }
 }

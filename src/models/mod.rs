@@ -1,5 +1,7 @@
 pub mod request;
+pub mod workspace;
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
@@ -28,14 +30,14 @@ pub enum FieldKind {
     Header,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyValueField {
     pub id: String,
     pub key: Option<String>,
     pub value: Option<String>,
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Method {
     #[default]
     Get,
