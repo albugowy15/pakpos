@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -81,9 +81,7 @@ jobs:
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --latest --prepend CHANGELOG.md
-        env:
-          OUTPUT: CHANGELOG.md
+          args: -o CHANGELOG.md
 
       - name: Commit and Push CHANGELOG.md
         run: |
