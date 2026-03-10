@@ -4,6 +4,25 @@ A native desktop HTTP client written in Rust. I built this because Postman has g
 
 **Status: work in progress.** The core request functionality is functional, including custom headers and query parameters.
 
+## Installation
+
+You can download the latest pre-built binaries for your platform from the [Releases](https://github.com/yawi/pakpos/releases) page.
+
+### Linux
+1. Download the `pakpos-linux-x86_64.tar.gz` archive.
+2. Extract it: `tar -xzvf pakpos-linux-x86_64.tar.gz`.
+3. Run the binary: `./pakpos`.
+
+### macOS
+1. Download the `pakpos-macos-aarch64.tar.gz` archive.
+2. Extract it and move `pakpos` to your Applications folder or run it directly from the terminal.
+   *Note: You may need to allow the app to run in "System Settings > Privacy & Security" if it's blocked as an unidentified developer.*
+
+### Windows
+1. Download the `pakpos-windows-x86_64.zip` archive.
+2. Extract the ZIP file.
+3. Double-click `pakpos.exe` to start the application.
+
 ## What it does
 
 - GET, POST, PUT, DELETE, PATCH, HEAD requests
