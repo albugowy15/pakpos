@@ -6,7 +6,7 @@ A native desktop HTTP client written in Rust. I built this because Postman has g
 
 ## Installation
 
-You can download the latest pre-built binaries for your platform from the [Releases](https://github.com/yawi/pakpos/releases) page.
+You can download the latest pre-built binaries for your platform from the [Releases](https://github.com/albugowy15/pakpos/releases) page.
 
 ### Linux
 1. Download the `pakpos-linux-x86_64.tar.gz` archive.
