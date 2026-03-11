@@ -4,17 +4,7 @@ version = "0.2.4"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.14.0", default-features = false, features = [
-  "crisp",
-  "highlighter",
-  "thread-pool",
-  "linux-theme-detection",
-  "tiny-skia",
-  "tokio",
-  "wayland",
-  "web-colors",
-  "svg",
-] }
+iced = { version = "0.14.0", features = ["highlighter", "tokio", "svg"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.13.2", default-features = false, features = [
