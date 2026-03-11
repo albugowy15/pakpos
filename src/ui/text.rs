@@ -4,8 +4,8 @@ use iced::{
 };
 
 pub fn bold(header: &str) -> Text<'_, Theme, Renderer> {
-    return text(header).font(Font {
+    text(header).font(Font {
         weight: font::Weight::Bold,
         ..Font::DEFAULT
-    });
+    })
 }
