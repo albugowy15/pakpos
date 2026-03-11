@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use iced::{
-    Alignment, Color, Element, Font, Length, Task, Theme, font, highlighter,
+    Alignment, Color, Element, Length, Task, Theme, highlighter,
     keyboard::{Key, key::Named},
+    task,
     widget::{
         button, center, column, pick_list, responsive, row, scrollable, space, svg, table, text,
         text_editor, text_input,
@@ -10,10 +11,13 @@ use iced::{
 };
 use uuid::Uuid;
 
-use crate::ui::{self, indent::handle_smart_indent};
 use crate::{
     Error,
-    models::{EDITOR_TABS, EditorTab, FieldKind, KeyValueField, METHODS, Method},
+    models::{
+        FieldKind,
+        editor_tab::EDITOR_TABS,
+        method::{METHODS, Method},
+    },
 };
 use crate::{
     models::request::{FindRequest, Request},
@@ -21,7 +25,12 @@ use crate::{
     net::RequestTask,
     storage::Storage,
 };
+use crate::{
+    models::{KeyValueField, editor_tab::EditorTab},
+    ui::{self},
+};
 
+#[derive(Default)]
 pub struct App {
     storage: Storage,
     method: Method,
@@ -42,6 +51,7 @@ pub struct App {
     headers: Vec<KeyValueField>,
     responses: HashMap<String, String>,
     loading: bool,
+    request_handle: Option<task::Handle>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +65,9 @@ pub enum AppMessage {
     RequestAdded,
     ActiveRequestChanged(String),
     RequestTitleChanged(String),
+    RequestTitleSubmitted,
     RequestSubmitted,
+    RequestCancelled,
     RequestFinished(Result<String, Error>),
     // Editor
     MethodChanged(Method),
@@ -78,22 +90,8 @@ impl App {
     fn with_storage(storage: Storage) -> Self {
         let mut app = Self {
             storage,
-            method: Method::default(),
-            url: String::new(),
-            active_tab: EditorTab::default(),
-            workspaces: Vec::new(),
-            active_workspace_id: String::new(),
-            workspace_title: String::new(),
-            search_query: String::new(),
-            requests: Vec::new(),
-            active_request_id: String::new(),
-            request_title: String::new(),
-            request_body: text_editor::Content::new(),
-            response_body: text_editor::Content::new(),
-            query_params: Vec::new(),
-            headers: Vec::new(),
-            responses: std::collections::HashMap::new(),
             loading: false,
+            ..Default::default()
         };
 
         app.workspaces = app.storage.load_all_workspaces();
@@ -188,14 +186,14 @@ impl App {
             if let Some(body) = &req.body {
                 self.request_body
                     .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
-                        std::sync::Arc::new(body.clone()),
+                        Arc::new(body.clone()),
                     )));
             }
             self.response_body = text_editor::Content::new();
             if let Some(resp) = self.responses.get(id) {
                 self.response_body
                     .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
-                        std::sync::Arc::new(resp.clone()),
+                        Arc::new(resp.clone()),
                     )));
             }
         }
@@ -284,7 +282,17 @@ impl App {
                     .query_params(query_params)
                     .headers(headers);
 
-                Task::perform(task.execute(), AppMessage::RequestFinished)
+                let (task, handle) =
+                    Task::perform(task.execute(), AppMessage::RequestFinished).abortable();
+                self.request_handle = Some(handle);
+                task
+            }
+            AppMessage::RequestCancelled => {
+                self.loading = false;
+                if let Some(handle) = &self.request_handle {
+                    handle.abort();
+                }
+                Task::none()
             }
             AppMessage::TabChanged(tab) => {
                 self.active_tab = tab;
@@ -297,7 +305,7 @@ impl App {
                 Task::none()
             }
             AppMessage::RequestBodyEdited(action) => {
-                handle_smart_indent(&mut self.request_body, action);
+                ui::text_input::smart_indent(&mut self.request_body, action);
                 Task::none()
             }
             AppMessage::RequestFinished(response) => {
@@ -306,7 +314,10 @@ impl App {
                 match response {
                     Ok(result) => {
                         self.response_body.perform(text_editor::Action::Edit(
-                            text_editor::Edit::Paste(std::sync::Arc::new(result.clone())),
+                            text_editor::Edit::Paste(Arc::new(result.clone())),
+                        ));
+                        self.response_body.perform(text_editor::Action::Move(
+                            text_editor::Motion::DocumentStart,
                         ));
                         self.responses
                             .insert(self.active_request_id.clone(), result);
@@ -317,7 +328,7 @@ impl App {
                 Task::none()
             }
             AppMessage::ResponseBodyEdited(action) => {
-                handle_smart_indent(&mut self.response_body, action);
+                ui::text_input::smart_indent(&mut self.response_body, action);
                 Task::none()
             }
             AppMessage::FieldKeyChanged(kind, id, val) => {
@@ -363,14 +374,17 @@ impl App {
                 Task::none()
             }
             AppMessage::RequestTitleChanged(title) => {
+                self.request_title = title;
+                Task::none()
+            }
+            AppMessage::RequestTitleSubmitted => {
                 if let Some(req) = self
                     .requests
                     .iter_mut()
                     .find(|r| r.id == self.active_request_id)
                 {
-                    req.title = title.clone();
+                    req.title = self.request_title.clone();
                 }
-                self.request_title = title;
                 self.save_active_request();
                 Task::none()
             }
@@ -387,22 +401,15 @@ impl App {
             FieldKind::Header => "Add Header",
         };
 
-        let bold = |header| {
-            text(header).font(Font {
-                weight: font::Weight::Bold,
-                ..Font::DEFAULT
-            })
-        };
-
         responsive(move |size| {
             let columns = [
-                table::column(bold("Key"), move |row: &KeyValueField| {
+                table::column(ui::text::bold("Key"), move |row: &KeyValueField| {
                     text_input("Key", row.key.as_deref().unwrap_or_default())
                         .on_input(move |val| AppMessage::FieldKeyChanged(kind, row.id.clone(), val))
                         .width(Length::Fill)
                 })
                 .width(Length::Fill),
-                table::column(bold("Value"), move |row: &KeyValueField| {
+                table::column(ui::text::bold("Value"), move |row: &KeyValueField| {
                     text_input("Value", row.value.as_deref().unwrap_or_default())
                         .on_input(move |val| {
                             AppMessage::FieldValueChanged(kind, row.id.clone(), val)
@@ -410,7 +417,7 @@ impl App {
                         .width(Length::Fill)
                 })
                 .width(Length::Fill),
-                table::column(bold("Action"), move |row: &KeyValueField| {
+                table::column(ui::text::bold("Action"), move |row: &KeyValueField| {
                     button(
                         svg("assets/icon/trash.svg")
                             .style(|_theme, _status| svg::Style {
@@ -444,17 +451,15 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, AppMessage> {
-        let submit_msg = if !self.url.is_empty() && !self.loading {
+        let submit_button_message = if self.loading {
+            Some(AppMessage::RequestCancelled)
+        } else if !self.url.is_empty() {
             Some(AppMessage::RequestSubmitted)
         } else {
             None
         };
 
-        let button_label = if self.loading {
-            "Sending... ↻"
-        } else {
-            "Send"
-        };
+        let submit_button_label = if self.loading { "Cancel" } else { "Send" };
 
         let active_tab_content: Element<'_, AppMessage> = match self.active_tab {
             EditorTab::Body => responsive(move |size| {
@@ -479,28 +484,8 @@ impl App {
             EditorTab::Headers => self.render_kv_editor(FieldKind::Header),
         };
 
-        let active_workspace = self
-            .workspaces
-            .iter()
-            .find(|w| w.id == self.active_workspace_id)
-            .cloned();
-
         row!(
             column!(
-                row!(
-                    pick_list(
-                        self.workspaces.clone(),
-                        active_workspace,
-                        AppMessage::ActiveWorkspaceChanged,
-                    )
-                    .width(Length::Fill),
-                    button("+")
-                        .style(button::primary)
-                        .on_press(AppMessage::WorkspaceAdded),
-                )
-                .spacing(5)
-                .align_y(Alignment::Center),
-                space::vertical().height(10),
                 row!(
                     text_input("Search requests...", &self.search_query)
                         .on_input(AppMessage::SearchQueryChanged)
@@ -567,6 +552,7 @@ impl App {
                         text("/").size(14),
                         text_input("", &self.request_title)
                             .on_input(AppMessage::RequestTitleChanged)
+                            .on_submit(AppMessage::RequestTitleSubmitted)
                             .size(14)
                             .width(300)
                     )
@@ -576,7 +562,16 @@ impl App {
                         pick_list(METHODS, Some(self.method), AppMessage::MethodChanged)
                             .placeholder("HTTP Method"),
                         text_input("URL...", &self.url).on_input(AppMessage::UrlChanged),
-                        button(button_label).on_press_maybe(submit_msg),
+                        button(text(submit_button_label).align_x(Alignment::Center))
+                            .width(80)
+                            .style(|theme, status| {
+                                if self.loading {
+                                    button::danger(theme, status)
+                                } else {
+                                    button::primary(theme, status)
+                                }
+                            })
+                            .on_press_maybe(submit_button_message),
                     )
                     .spacing(5),
                     row(EDITOR_TABS.map(|tab| {
@@ -873,5 +868,169 @@ mod tests {
         let _ = app.update(AppMessage::WorkspaceTitleChanged("Renamed".to_owned()));
         assert_eq!(app.workspace_title, "Renamed");
         assert_eq!(app.workspaces[0].title, "Renamed");
+    }
+
+    #[test]
+    fn test_search_query_changed() {
+        let mut app = test_app();
+        let _ = app.update(AppMessage::SearchQueryChanged("my query".to_owned()));
+        assert_eq!(app.search_query, "my query");
+    }
+
+    #[test]
+    fn test_active_request_changed() {
+        let mut app = app_with_request();
+        let initial_id = app.active_request_id.clone();
+
+        // Add another request
+        let _ = app.update(AppMessage::RequestAdded);
+        let second_id = app.active_request_id.clone();
+        assert_ne!(initial_id, second_id);
+
+        // Switch back
+        let _ = app.update(AppMessage::ActiveRequestChanged(initial_id.clone()));
+        assert_eq!(app.active_request_id, initial_id);
+    }
+
+    #[test]
+    fn test_request_title_changed() {
+        let mut app = app_with_request();
+        // RequestTitleChanged only update app.request_title state
+        let _ = app.update(AppMessage::RequestTitleChanged(
+            "New Request Title".to_owned(),
+        ));
+        assert_eq!(app.request_title, "New Request Title");
+        assert_eq!(app.requests[0].title, "New Request");
+
+        // RequestTitleSubmitted should update app.requests state
+        let _ = app.update(AppMessage::RequestTitleSubmitted);
+        assert_eq!(app.request_title, "New Request Title");
+        assert_eq!(app.requests[0].title, "New Request Title");
+    }
+
+    #[test]
+    fn test_request_body_edited() {
+        let mut app = app_with_request();
+        let _ = app.update(AppMessage::RequestBodyEdited(Action::Edit(Edit::Insert(
+            'a',
+        ))));
+        assert_eq!(app.request_body.text(), "a");
+    }
+
+    #[test]
+    fn test_response_body_edited() {
+        let mut app = app_with_request();
+        let _ = app.update(AppMessage::ResponseBodyEdited(Action::Edit(Edit::Insert(
+            'b',
+        ))));
+        assert_eq!(app.response_body.text(), "b");
+    }
+
+    #[test]
+    fn test_active_workspace_changed_same_id() {
+        let mut app = test_app();
+        let ws = app.workspaces[0].clone();
+        let _ = app.update(AppMessage::ActiveWorkspaceChanged(ws));
+        // Should return early, no state change expected
+    }
+
+    #[test]
+    fn test_field_header_ops() {
+        let mut app = app_with_request();
+        let initial_count = app.headers.len();
+
+        // Add header
+        let _ = app.update(AppMessage::FieldAdded(FieldKind::Header));
+        assert_eq!(app.headers.len(), initial_count + 1);
+
+        let id = app.headers[initial_count].id.clone();
+
+        // Key change
+        let _ = app.update(AppMessage::FieldKeyChanged(
+            FieldKind::Header,
+            id.clone(),
+            "X-Custom".to_owned(),
+        ));
+        assert_eq!(app.headers[initial_count].key.as_deref(), Some("X-Custom"));
+
+        // Value change
+        let _ = app.update(AppMessage::FieldValueChanged(
+            FieldKind::Header,
+            id.clone(),
+            "CustomValue".to_owned(),
+        ));
+        assert_eq!(
+            app.headers[initial_count].value.as_deref(),
+            Some("CustomValue")
+        );
+
+        // Remove
+        let _ = app.update(AppMessage::FieldRemoved(FieldKind::Header, id));
+        assert_eq!(app.headers.len(), initial_count);
+    }
+
+    #[test]
+    fn test_request_finished_ok() {
+        let mut app = app_with_request();
+        app.loading = true;
+        let _ = app.update(AppMessage::RequestFinished(Ok(
+            "{\"status\":\"ok\"}".to_owned()
+        )));
+        assert!(!app.loading);
+        assert_eq!(app.response_body.text(), "{\"status\":\"ok\"}");
+        assert_eq!(
+            app.responses.get(&app.active_request_id).unwrap(),
+            "{\"status\":\"ok\"}"
+        );
+    }
+
+    #[test]
+    fn test_request_finished_err() {
+        let mut app = app_with_request();
+        app.loading = true;
+        let _ = app.update(AppMessage::RequestFinished(Err(crate::Error::Api)));
+        assert!(!app.loading);
+    }
+
+    #[test]
+    fn test_tab_navigation() {
+        let mut app = test_app();
+        let tabs = [EditorTab::Params, EditorTab::Headers, EditorTab::Body];
+        for tab in tabs {
+            let _ = app.update(AppMessage::TabChanged(tab));
+            assert_eq!(app.active_tab, tab);
+        }
+    }
+
+    #[test]
+    fn test_app_title() {
+        let app = test_app();
+        assert_eq!(app.title(), "Pakpos");
+    }
+
+    #[test]
+    fn test_render_kv_editor_branch() {
+        let mut app = test_app();
+        // Test with empty rows
+        let _ = app.render_kv_editor(FieldKind::QueryParam);
+
+        // Test with non-empty rows
+        let _ = app.update(AppMessage::FieldAdded(FieldKind::QueryParam));
+        let _ = app.render_kv_editor(FieldKind::QueryParam);
+    }
+
+    #[test]
+    fn test_view_branch() {
+        let mut app = test_app();
+        // Test with no active request
+        let _ = app.view();
+
+        // Test with active request
+        let _ = app.update(AppMessage::RequestAdded);
+        let _ = app.view();
+
+        // Test with loading state
+        app.loading = true;
+        let _ = app.view();
     }
 }

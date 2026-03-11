@@ -91,4 +91,25 @@ mod tests {
         assert_eq!(task.query_params, vec![("a".to_owned(), "b".to_owned())]);
         assert_eq!(task.headers, vec![("c".to_owned(), "d".to_owned())]);
     }
+
+    #[tokio::test]
+    async fn test_request_task_execute_invalid_url() {
+        let methods = [
+            Method::Get,
+            Method::Post,
+            Method::Put,
+            Method::Delete,
+            Method::Patch,
+            Method::Head,
+        ];
+
+        for method in methods {
+            let task = RequestTask::new(method, "not a url".to_string())
+                .body("some body".to_string())
+                .query_params(vec![("key".to_string(), "val".to_string())])
+                .headers(vec![("X-Test".to_string(), "test".to_string())]);
+            let result = task.execute().await;
+            assert!(result.is_err());
+        }
+    }
 }

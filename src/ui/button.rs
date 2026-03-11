@@ -35,3 +35,27 @@ fn disabled(style: Style) -> Style {
         ..style
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::Theme;
+
+    #[test]
+    fn test_background_style() {
+        let theme = Theme::Dark;
+        let style_active = background(&theme, Status::Active);
+        let style_hovered = background(&theme, Status::Hovered);
+        let style_pressed = background(&theme, Status::Pressed);
+        let style_disabled = background(&theme, Status::Disabled);
+
+        assert!(style_active.background.is_some());
+        assert!(style_hovered.background.is_some());
+        assert!(style_pressed.background.is_some());
+        assert!(style_disabled.background.is_some());
+
+        // Hovered/Pressed/Active should have the same background in this implementation
+        assert_eq!(style_hovered.background, style_active.background);
+        assert_eq!(style_pressed.background, style_active.background);
+    }
+}

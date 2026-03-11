@@ -7,6 +7,7 @@ use crate::models::workspace::Workspace;
 
 pub const DEFAULT_BASE_DIR: &str = "workspaces";
 
+#[derive(Default)]
 pub struct Storage {
     base_dir: PathBuf,
 }
@@ -261,5 +262,11 @@ mod tests {
         assert!(storage.load_all_workspaces().is_empty());
         assert!(storage.load_all_requests("nonexistent").is_empty());
         cleanup(&storage);
+    }
+
+    #[test]
+    fn test_default_path() {
+        let storage = Storage::default_path();
+        assert_eq!(storage.base_dir, PathBuf::from(DEFAULT_BASE_DIR));
     }
 }

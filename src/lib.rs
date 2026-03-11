@@ -23,3 +23,22 @@ impl From<serde_json::Error> for Error {
         Self::Serde
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_debug() {
+        assert_eq!(format!("{:?}", Error::Api), "Api");
+        assert_eq!(format!("{:?}", Error::Serde), "Serde");
+    }
+
+    #[test]
+    fn test_error_from_serde_json() {
+        let result: Result<serde_json::Value, _> = serde_json::from_str("{ invalid }");
+        let err = result.unwrap_err();
+        let error: Error = err.into();
+        assert!(matches!(error, Error::Serde));
+    }
+}

@@ -22,3 +22,21 @@ impl Workspace {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_creation() {
+        let ws = Workspace::new(String::from("Test Workspace"));
+        assert_eq!(ws.title, "Test Workspace");
+        assert!(!ws.id.is_empty());
+    }
+
+    #[test]
+    fn test_workspace_display() {
+        let ws = Workspace::new(String::from("My Workspace"));
+        assert_eq!(format!("{}", ws), "My Workspace");
+    }
+}
