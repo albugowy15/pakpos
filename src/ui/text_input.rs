@@ -41,11 +41,10 @@ pub fn smart_indent(content: &mut text_editor::Content, action: text_editor::Act
 
                 let char_after_cursor = text.chars().nth(column);
                 let is_between_brackets = ends_with_open
-                    && match (trimmed_before.chars().last(), char_after_cursor) {
-                        (Some('{'), Some('}')) => true,
-                        (Some('['), Some(']')) => true,
-                        _ => false,
-                    };
+                    && matches!(
+                        (trimmed_before.chars().last(), char_after_cursor),
+                        (Some('{'), Some('}')) | (Some('['), Some(']'))
+                    );
 
                 if is_between_brackets {
                     let mut to_insert = String::with_capacity(leading_whitespace.len() * 2 + 4);
