@@ -1,7 +1,7 @@
 use iced::widget::text_editor;
 use std::sync::Arc;
 
-pub fn handle_smart_indent(content: &mut text_editor::Content, action: text_editor::Action) {
+pub fn smart_indent(content: &mut text_editor::Content, action: text_editor::Action) {
     match action {
         text_editor::Action::Edit(text_editor::Edit::Insert(c @ ('{' | '[' | '"'))) => {
             let matching = match c {
@@ -100,29 +100,29 @@ mod tests {
     #[test]
     fn test_insert_brackets_and_quotes() {
         let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('{')));
+        smart_indent(&mut content, Action::Edit(Edit::Insert('{')));
         assert_content(&content, "{}", 0, 1);
 
         let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('[')));
+        smart_indent(&mut content, Action::Edit(Edit::Insert('[')));
         assert_content(&content, "[]", 0, 1);
 
         let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('"')));
+        smart_indent(&mut content, Action::Edit(Edit::Insert('"')));
         assert_content(&content, "\"\"", 0, 1);
     }
 
     #[test]
     fn test_insert_normal_char() {
         let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('a')));
+        smart_indent(&mut content, Action::Edit(Edit::Insert('a')));
         assert_content(&content, "a", 0, 1);
     }
 
     #[test]
     fn test_default_action() {
         let mut content = Content::with_text("abc");
-        handle_smart_indent(&mut content, Action::Move(Motion::Right));
+        smart_indent(&mut content, Action::Move(Motion::Right));
         assert_content(&content, "abc", 0, 1);
     }
 
@@ -130,7 +130,7 @@ mod tests {
     fn test_enter_simple_indent() {
         let mut content = Content::with_text("    abc");
         content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "    abc\n    ", 1, 4);
     }
 
@@ -138,7 +138,7 @@ mod tests {
     fn test_enter_after_brace_indents() {
         let mut content = Content::with_text("  {");
         content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "  {\n  \t", 1, 3);
     }
 
@@ -146,7 +146,7 @@ mod tests {
     fn test_enter_after_bracket_indents() {
         let mut content = Content::with_text("[");
         content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "[\n\t", 1, 1);
     }
 
@@ -158,7 +158,7 @@ mod tests {
         content.perform(Action::Move(Motion::Right));
         content.perform(Action::Move(Motion::Right));
 
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "  {\n  \t\n  }", 1, 3);
     }
 
@@ -168,7 +168,7 @@ mod tests {
         content.perform(Action::Move(Motion::DocumentStart));
         content.perform(Action::Move(Motion::Right));
 
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "[\n\t\n]", 1, 1);
     }
 
@@ -176,7 +176,7 @@ mod tests {
     fn test_enter_with_multibyte_chars() {
         let mut content = Content::with_text("🚀 {");
         content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "🚀 {\n\t", 1, 1);
     }
 
@@ -191,7 +191,7 @@ mod tests {
             selection: None,
         });
 
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert!(content.line_count() > 1);
     }
 
@@ -200,14 +200,14 @@ mod tests {
         let mut content = Content::with_text("{]");
         content.perform(Action::Move(Motion::DocumentStart));
         content.perform(Action::Move(Motion::Right));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "{\n\t]", 1, 1);
     }
 
     #[test]
     fn test_enter_empty_content() {
         let mut content = Content::new();
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "\n", 1, 0);
     }
 
@@ -215,7 +215,7 @@ mod tests {
     fn test_enter_start_of_line_no_indent() {
         let mut content = Content::with_text("abc");
         content.perform(Action::Move(Motion::DocumentStart));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Enter));
+        smart_indent(&mut content, Action::Edit(Edit::Enter));
         assert_content(&content, "\nabc", 1, 0);
     }
 
@@ -223,7 +223,7 @@ mod tests {
     fn test_insert_bracket_at_end_of_large_content() {
         let mut content = Content::with_text("{\n\t\"a\": \"b\"\n}");
         content.perform(Action::Move(Motion::DocumentEnd));
-        handle_smart_indent(&mut content, Action::Edit(Edit::Insert('{')));
+        smart_indent(&mut content, Action::Edit(Edit::Insert('{')));
         assert_content(&content, "{\n\t\"a\": \"b\"\n}{}", 2, 2);
     }
 }

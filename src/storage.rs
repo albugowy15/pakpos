@@ -130,7 +130,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{KeyValueField, Method};
+    use crate::models::{KeyValueField, method::Method};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);

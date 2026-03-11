@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::models::{KeyValueField, Method};
+use crate::models::{KeyValueField, method::Method};
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Request {

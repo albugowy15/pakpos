@@ -1,4 +1,4 @@
-use crate::{Error, models::Method};
+use crate::{Error, models::method::Method};
 use serde::Serialize;
 
 pub struct RequestTask {
