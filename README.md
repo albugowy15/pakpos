@@ -1,6 +1,6 @@
 # Pakpos
 
-A native desktop HTTP client written in Rust. I built this because Postman has gotten bloated and requires an account now, and I wanted something fast and simple that just works offline.
+A native desktop HTTP client written in Rust. I built this because Postman has gotten bloated and requires an account now, and I wanted something fast and simple that just works without an online account.
 
 **Status: work in progress.** The core request functionality is functional, including custom headers and query parameters.
 
@@ -31,14 +31,13 @@ You can download the latest pre-built binaries for your platform from the [Relea
 - Auto-formats JSON responses
 - Smart indentation and bracket matching in the editor
 - Loading state and visual feedback for pending requests
-- Comprehensive test suite (Unit, Integration, and E2E simulation)
-- No account, no telemetry, no internet required
+- No account, no telemetry
 
 A few things worth calling out:
 
 - **Under 50MB.** Postman is ~500MB. Insomnia is ~200MB. Pakpos is a single binary you can throw in your PATH and forget about.
 - **Actually native.** Built with [Iced](https://iced.rs), not Electron or any webview wrapper. It starts fast, uses minimal memory, and doesn't spin up a browser engine to render a text field.
-- **No account required.** Open it, use it. Nothing to sign in to, nothing phoning home, works completely offline.
+- **No account required.** Open it, use it. Nothing to sign in to, nothing phoning home.
 
 ## Roadmap (What's next)
 
@@ -54,7 +53,7 @@ A few things worth calling out:
 You'll need Rust 1.85+ (Edition 2024). If you don't have it: https://rustup.rs
 
 ```bash
-git clone https://github.com/yourusername/pakpos.git
+git clone https://github.com/albugowy15/pakpos.git
 cd pakpos
 cargo run --release
 ```
