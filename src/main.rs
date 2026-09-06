@@ -1,9 +1,14 @@
-use pakpos::app::App;
+mod ui;
 
-fn main() -> iced::Result {
-    iced::application(App::new, App::update, App::view)
-        .title(App::title)
-        .resizable(true)
-        .decorations(true)
-        .run()
+use gtk::{Application, gio, prelude::*};
+
+const APPLICATION_ID: &str = "dev.pakpos.Pakpos";
+
+fn main() -> gtk::glib::ExitCode {
+    let application = Application::builder()
+        .application_id(APPLICATION_ID)
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    application.connect_activate(ui::build);
+    application.run()
 }
