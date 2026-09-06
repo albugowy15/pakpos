@@ -7,10 +7,11 @@ use std::{
 
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry,
-    HeaderBar, Label, Notebook, Orientation, Paned, PolicyType, ScrolledWindow, Separator,
-    TextView, gio, glib, prelude::*,
+    HeaderBar, Label, MenuButton, Notebook, Orientation, Paned, PolicyType, ScrolledWindow,
+    Separator, TextView, gio, glib, prelude::*,
 };
 use pakpos::{
+    curl::{from_command, to_command},
     models::{HeaderRow, HttpMethod, RequestBody, RequestDraft, RequestSnapshot},
     net::{ResponseData, execute},
 };
@@ -77,16 +78,29 @@ pub fn build(application: &Application) {
     url.set_tooltip_text(Some("Absolute HTTP or HTTPS URL"));
     let send = Button::with_label("Send");
     send.add_css_class("suggested-action");
+    let request_actions = gio::Menu::new();
+    request_actions.append(Some("Copy as cURL"), Some("win.copy-curl"));
+    request_actions.append(Some("Paste cURL"), Some("win.paste-curl"));
+    let send_menu = MenuButton::builder()
+        .icon_name("pan-down-symbolic")
+        .menu_model(&request_actions)
+        .tooltip_text("More request actions")
+        .build();
+    send_menu.add_css_class("suggested-action");
+    let send_group = GtkBox::new(Orientation::Horizontal, 0);
+    send_group.add_css_class("linked");
+    send_group.append(&send);
+    send_group.append(&send_menu);
     let cancel = Button::with_label("Cancel");
-    cancel.set_sensitive(false);
+    cancel.set_visible(false);
     request_row.append(&method);
     request_row.append(&url);
-    request_row.append(&send);
+    request_row.append(&send_group);
     request_row.append(&cancel);
     main.append(&request_row);
 
     let request_notebook = Notebook::new();
-    let (headers_page, header_rows) = build_headers_page();
+    let (headers_page, headers_box, header_rows) = build_headers_page();
     request_notebook.append_page(&headers_page, Some(&Label::new(Some("Headers"))));
     let (body_page, body_mode, json_editor) = build_body_page();
     request_notebook.append_page(&body_page, Some(&Label::new(Some("Body"))));
@@ -121,7 +135,7 @@ pub fn build(application: &Application) {
         let body_mode = body_mode.clone();
         let json_editor = json_editor.clone();
         let header_rows = header_rows.clone();
-        let send = send.clone();
+        let send_group = send_group.clone();
         let cancel = cancel.clone();
         let response_summary = response_summary.clone();
         let response_body = response_body.clone();
@@ -133,30 +147,18 @@ pub fn build(application: &Application) {
                 return;
             }
 
-            let Some(method_value) = HttpMethod::ALL.get(method.selected() as usize).copied()
-            else {
-                show_error(&response_summary, "Select a request method.");
-                return;
-            };
-            let headers = header_rows
-                .borrow()
-                .iter()
-                .map(|widgets| HeaderRow {
-                    enabled: widgets.enabled.is_active(),
-                    name: widgets.name.text().to_string(),
-                    value: widgets.value.text().to_string(),
-                })
-                .collect();
-            let body = if body_mode.selected() == 1 {
-                RequestBody::Json(buffer_text(&json_editor))
-            } else {
-                RequestBody::None
-            };
-            let draft = RequestDraft {
-                method: method_value,
-                url: url.text().to_string(),
-                headers,
-                body,
+            let draft = match collect_request_draft(
+                &method,
+                &url,
+                &header_rows,
+                &body_mode,
+                &json_editor,
+            ) {
+                Ok(draft) => draft,
+                Err(error) => {
+                    show_error(&response_summary, &error);
+                    return;
+                }
             };
             let snapshot = match RequestSnapshot::try_from(draft) {
                 Ok(snapshot) => snapshot,
@@ -171,7 +173,7 @@ pub fn build(application: &Application) {
             state.active_id.set(Some(request_id));
             let (cancel_sender, cancel_receiver) = oneshot::channel();
             state.cancel.replace(Some(cancel_sender));
-            set_request_running(&send, &cancel, true);
+            set_request_running(&send_group, &cancel, true);
             response_summary.remove_css_class("error");
             response_summary.set_text("Sending request…");
             response_body.buffer().set_text("");
@@ -192,7 +194,7 @@ pub fn build(application: &Application) {
             });
 
             let state = state.clone();
-            let send = send.clone();
+            let send_group = send_group.clone();
             let cancel = cancel.clone();
             let response_summary = response_summary.clone();
             let response_body = response_body.clone();
@@ -203,7 +205,7 @@ pub fn build(application: &Application) {
                         if state.active_id.get() == Some(request_id) {
                             state.active_id.set(None);
                             state.cancel.replace(None);
-                            set_request_running(&send, &cancel, false);
+                            set_request_running(&send_group, &cancel, false);
                             display_result(
                                 result,
                                 &response_summary,
@@ -217,7 +219,7 @@ pub fn build(application: &Application) {
                     Err(mpsc::TryRecvError::Disconnected) => {
                         state.active_id.set(None);
                         state.cancel.replace(None);
-                        set_request_running(&send, &cancel, false);
+                        set_request_running(&send_group, &cancel, false);
                         show_error(
                             &response_summary,
                             "The request worker stopped unexpectedly.",
@@ -241,6 +243,81 @@ pub fn build(application: &Application) {
             }
         }
     });
+
+    let copy_curl_action = gio::SimpleAction::new("copy-curl", None);
+    copy_curl_action.connect_activate({
+        let method = method.clone();
+        let url = url.clone();
+        let header_rows = header_rows.clone();
+        let body_mode = body_mode.clone();
+        let json_editor = json_editor.clone();
+        let response_summary = response_summary.clone();
+        let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
+        move |_, _| {
+            let result =
+                collect_request_draft(&method, &url, &header_rows, &body_mode, &json_editor)
+                    .and_then(|draft| to_command(draft).map_err(|error| error.to_string()));
+            match result {
+                Ok(command) => {
+                    clipboard.set_text(&command);
+                    show_message(&response_summary, "Copied the current request as cURL.");
+                }
+                Err(error) => show_error(&response_summary, &error),
+            }
+        }
+    });
+    window.add_action(&copy_curl_action);
+
+    let paste_curl_action = gio::SimpleAction::new("paste-curl", None);
+    paste_curl_action.connect_activate({
+        let method = method.clone();
+        let url = url.clone();
+        let headers_box = headers_box.clone();
+        let header_rows = header_rows.clone();
+        let body_mode = body_mode.clone();
+        let json_editor = json_editor.clone();
+        let response_summary = response_summary.clone();
+        let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
+        move |_, _| {
+            clipboard.read_text_async(None::<&gio::Cancellable>, {
+                let method = method.clone();
+                let url = url.clone();
+                let headers_box = headers_box.clone();
+                let header_rows = header_rows.clone();
+                let body_mode = body_mode.clone();
+                let json_editor = json_editor.clone();
+                let response_summary = response_summary.clone();
+                move |result| match result {
+                    Ok(Some(text)) => match from_command(&text) {
+                        Ok(import) => {
+                            apply_request_draft(
+                                import.request,
+                                &method,
+                                &url,
+                                &headers_box,
+                                &header_rows,
+                                &body_mode,
+                                &json_editor,
+                            );
+                            let message = if import.warnings.is_empty() {
+                                "Pasted the cURL request.".to_owned()
+                            } else {
+                                format!("Pasted the cURL request. {}", import.warnings.join(" "))
+                            };
+                            show_message(&response_summary, &message);
+                        }
+                        Err(error) => show_error(&response_summary, &error.to_string()),
+                    },
+                    Ok(None) => show_error(&response_summary, "The clipboard has no text."),
+                    Err(error) => show_error(
+                        &response_summary,
+                        &format!("Could not read the clipboard: {error}"),
+                    ),
+                }
+            });
+        }
+    });
+    window.add_action(&paste_curl_action);
 
     let send_action = gio::SimpleAction::new("send", None);
     send_action.connect_activate(move |_, _| send_request());
@@ -282,7 +359,7 @@ fn build_sidebar() -> GtkBox {
     sidebar
 }
 
-fn build_headers_page() -> (GtkBox, Rc<RefCell<Vec<HeaderWidgets>>>) {
+fn build_headers_page() -> (GtkBox, GtkBox, Rc<RefCell<Vec<HeaderWidgets>>>) {
     let page = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(6)
@@ -306,7 +383,7 @@ fn build_headers_page() -> (GtkBox, Rc<RefCell<Vec<HeaderWidgets>>>) {
     });
     page.append(&rows_box);
     page.append(&add);
-    (page, rows)
+    (page, rows_box, rows)
 }
 
 fn add_header_row(container: &GtkBox, rows: &Rc<RefCell<Vec<HeaderWidgets>>>) {
@@ -342,11 +419,16 @@ fn add_header_row(container: &GtkBox, rows: &Rc<RefCell<Vec<HeaderWidgets>>>) {
         value,
     });
     remove.connect_clicked({
+        let container = container.clone();
         let rows = rows.clone();
         move |_| {
-            if let Some(index) = rows.borrow().iter().position(|item| item.row == row) {
+            let index = {
+                let rows = rows.borrow();
+                rows.iter().position(|item| item.row == row)
+            };
+            if let Some(index) = index {
                 let removed = rows.borrow_mut().remove(index);
-                removed.row.unparent();
+                container.remove(&removed.row);
             }
         }
     });
@@ -411,14 +493,97 @@ fn buffer_text(view: &TextView) -> String {
         .to_string()
 }
 
-fn set_request_running(send: &Button, cancel: &Button, running: bool) {
-    send.set_sensitive(!running);
-    cancel.set_sensitive(running);
+fn collect_request_draft(
+    method: &DropDown,
+    url: &Entry,
+    header_rows: &Rc<RefCell<Vec<HeaderWidgets>>>,
+    body_mode: &DropDown,
+    json_editor: &TextView,
+) -> Result<RequestDraft, String> {
+    let method = HttpMethod::ALL
+        .get(method.selected() as usize)
+        .copied()
+        .ok_or_else(|| "Select a request method.".to_owned())?;
+    let headers = header_rows
+        .borrow()
+        .iter()
+        .map(|widgets| HeaderRow {
+            enabled: widgets.enabled.is_active(),
+            name: widgets.name.text().to_string(),
+            value: widgets.value.text().to_string(),
+        })
+        .collect();
+    let body = if body_mode.selected() == 1 {
+        RequestBody::Json(buffer_text(json_editor))
+    } else {
+        RequestBody::None
+    };
+    Ok(RequestDraft {
+        method,
+        url: url.text().to_string(),
+        headers,
+        body,
+    })
+}
+
+fn apply_request_draft(
+    draft: RequestDraft,
+    method: &DropDown,
+    url: &Entry,
+    headers_box: &GtkBox,
+    header_rows: &Rc<RefCell<Vec<HeaderWidgets>>>,
+    body_mode: &DropDown,
+    json_editor: &TextView,
+) {
+    let method_index = HttpMethod::ALL
+        .iter()
+        .position(|value| *value == draft.method)
+        .unwrap_or_default();
+    method.set_selected(method_index as u32);
+    url.set_text(&draft.url);
+
+    let old_rows = std::mem::take(&mut *header_rows.borrow_mut());
+    for widgets in old_rows {
+        headers_box.remove(&widgets.row);
+    }
+    if draft.headers.is_empty() {
+        add_header_row(headers_box, header_rows);
+    } else {
+        for header in draft.headers {
+            add_header_row(headers_box, header_rows);
+            if let Some(widgets) = header_rows.borrow().last() {
+                widgets.enabled.set_active(header.enabled);
+                widgets.name.set_text(&header.name);
+                widgets.value.set_text(&header.value);
+            }
+        }
+    }
+
+    match draft.body {
+        RequestBody::None => {
+            body_mode.set_selected(0);
+            json_editor.buffer().set_text("");
+        }
+        RequestBody::Json(body) => {
+            body_mode.set_selected(1);
+            json_editor.buffer().set_text(&body);
+        }
+    }
+}
+
+fn set_request_running(send_group: &GtkBox, cancel: &Button, running: bool) {
+    send_group.set_visible(!running);
+    cancel.set_visible(running);
 }
 
 fn show_error(summary: &Label, message: &str) {
     summary.set_text(message);
     summary.add_css_class("error");
+}
+
+fn show_message(summary: &Label, message: &str) {
+    summary.remove_css_class("error");
+    summary.set_text(message);
 }
 
 fn display_result(
