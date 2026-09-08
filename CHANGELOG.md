@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- Classify JSON, text, HTML, attachment, binary, and missing-content-type responses.
+- Decode common declared text charsets and expose raw JSON alongside formatted JSON.
+- Stream binary and oversized text responses into safe, collision-free Downloads files.
+
 ## [0.2.4] - 2026-03-10
 
 ### Ci

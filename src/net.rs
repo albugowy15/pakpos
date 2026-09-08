@@ -1,4 +1,4 @@
-use std::{fmt, time::Instant};
+use std::{fmt, path::PathBuf, time::Instant};
 
 use reqwest::{
     Client,
@@ -8,77 +8,9 @@ use reqwest::{
 };
 use tokio::sync::oneshot;
 
-use crate::models::{
-    MultipartValue, REQUEST_TIMEOUT, RESPONSE_PREVIEW_LIMIT, RequestBody, RequestSnapshot,
-};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResponseHeader {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ResponseData {
-    pub status: u16,
-    pub reason: String,
-    pub elapsed: std::time::Duration,
-    pub body_size: u64,
-    pub headers: Vec<ResponseHeader>,
-    pub preview: Vec<u8>,
-    pub preview_truncated: bool,
-    pub content_type: Option<String>,
-}
-
-impl ResponseData {
-    pub fn summary(&self) -> String {
-        format!(
-            "{} {}  •  {} ms  •  {}",
-            self.status,
-            self.reason,
-            self.elapsed.as_millis(),
-            format_byte_count(self.body_size)
-        )
-    }
-
-    pub fn display_body(&self) -> String {
-        if self.preview.is_empty() {
-            return "This response has no body.".to_owned();
-        }
-
-        let decoded = String::from_utf8_lossy(&self.preview);
-        let is_json = self
-            .content_type
-            .as_deref()
-            .and_then(|value| value.split(';').next())
-            .map(str::trim)
-            .is_some_and(|media_type| {
-                media_type.eq_ignore_ascii_case("application/json")
-                    || media_type.to_ascii_lowercase().ends_with("+json")
-            });
-
-        let mut text = if is_json && !self.preview_truncated {
-            serde_json::from_str::<serde_json::Value>(&decoded)
-                .and_then(|value| serde_json::to_string_pretty(&value))
-                .unwrap_or_else(|_| decoded.into_owned())
-        } else {
-            decoded.into_owned()
-        };
-
-        if self.preview_truncated {
-            text.push_str("\n\n— Preview stopped at 5 MiB —");
-        }
-        text
-    }
-
-    pub fn display_headers(&self) -> String {
-        self.headers
-            .iter()
-            .map(|header| format!("{}: {}", header.name, header.value))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-}
+use crate::models::{MultipartValue, REQUEST_TIMEOUT, RequestBody, RequestSnapshot};
+use crate::response::{ResponseBodyCollector, system_download_directory};
+pub use crate::response::{ResponseData, ResponseHeader};
 
 #[derive(Debug)]
 pub enum RequestError {
@@ -117,15 +49,26 @@ pub async fn execute(
     snapshot: RequestSnapshot,
     cancel: oneshot::Receiver<()>,
 ) -> Result<ResponseData, RequestError> {
+    execute_with_download_directory(snapshot, cancel, system_download_directory()).await
+}
+
+pub async fn execute_with_download_directory(
+    snapshot: RequestSnapshot,
+    cancel: oneshot::Receiver<()>,
+    download_directory: Result<PathBuf, String>,
+) -> Result<ResponseData, RequestError> {
     tokio::select! {
         _ = cancel => Err(RequestError::Cancelled),
-        result = tokio::time::timeout(REQUEST_TIMEOUT, execute_inner(snapshot)) => {
+        result = tokio::time::timeout(REQUEST_TIMEOUT, execute_inner(snapshot, download_directory)) => {
             result.map_err(|_| RequestError::Timeout)?
         }
     }
 }
 
-async fn execute_inner(snapshot: RequestSnapshot) -> Result<ResponseData, RequestError> {
+async fn execute_inner(
+    snapshot: RequestSnapshot,
+    download_directory: Result<PathBuf, String>,
+) -> Result<ResponseData, RequestError> {
     let client = Client::builder()
         .redirect(Policy::none())
         .build()
@@ -198,15 +141,21 @@ async fn execute_inner(snapshot: RequestSnapshot) -> Result<ResponseData, Reques
         .headers()
         .get(CONTENT_TYPE)
         .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned());
+    let content_disposition = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned());
+    let mut body = ResponseBodyCollector::new(
+        content_type.as_deref(),
+        content_disposition.as_deref(),
+        response.url(),
+        download_directory,
+    );
 
     let mut body_size = 0_u64;
-    let mut preview = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(RequestError::Transport)? {
         body_size = body_size.saturating_add(chunk.len() as u64);
-        let remaining = RESPONSE_PREVIEW_LIMIT.saturating_sub(preview.len());
-        if remaining > 0 {
-            preview.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-        }
+        body.push(&chunk);
     }
 
     Ok(ResponseData {
@@ -215,22 +164,8 @@ async fn execute_inner(snapshot: RequestSnapshot) -> Result<ResponseData, Reques
         elapsed: started.elapsed(),
         body_size,
         headers: response_headers,
-        preview_truncated: body_size > preview.len() as u64,
-        preview,
-        content_type,
+        body: body.finish(),
     })
-}
-
-fn format_byte_count(bytes: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = 1024 * KIB;
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{:.1} KiB", bytes as f64 / KIB as f64)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 #[cfg(test)]
@@ -243,17 +178,33 @@ mod tests {
 
     use super::*;
     use crate::models::{HeaderRow, HttpMethod, RequestBody, RequestDraft, RequestSnapshot};
+    use crate::response::{ResponseBody, ResponseTextKind};
 
     fn response(preview: Vec<u8>, content_type: Option<&str>) -> ResponseData {
+        let kind = if content_type
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
+        {
+            ResponseTextKind::Json
+        } else {
+            ResponseTextKind::Plain
+        };
         ResponseData {
             status: 200,
             reason: "OK".to_owned(),
             elapsed: std::time::Duration::ZERO,
             body_size: preview.len() as u64,
             headers: Vec::new(),
-            preview,
-            preview_truncated: false,
-            content_type: content_type.map(str::to_owned),
+            body: if preview.is_empty() {
+                ResponseBody::Empty
+            } else {
+                ResponseBody::Text {
+                    text: String::from_utf8_lossy(&preview).into_owned(),
+                    kind,
+                    truncated: false,
+                    saved_path: None,
+                    notices: Vec::new(),
+                }
+            },
         }
     }
 
@@ -418,5 +369,55 @@ mod tests {
         assert!(request.contains("\r\n\r\nstreamed file bytes\r\n"));
         assert_eq!(response.status, 200);
         assert_eq!(response.body_size, 0);
+    }
+
+    #[tokio::test]
+    async fn streams_binary_response_to_the_selected_download_directory() {
+        let download_directory =
+            std::env::temp_dir().join(format!("pakpos-net-download-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&download_directory).unwrap();
+        let response_bytes = b"\x89PNG\r\n\x1a\nexact binary bytes";
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"../../image.png\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_bytes.len()
+            )
+            .unwrap();
+            stream.write_all(response_bytes).unwrap();
+        });
+
+        let snapshot = RequestSnapshot::try_from(RequestDraft {
+            url: format!("http://{address}/download"),
+            ..RequestDraft::default()
+        })
+        .unwrap();
+        let (_cancel_sender, cancel_receiver) = oneshot::channel();
+        let response = execute_with_download_directory(
+            snapshot,
+            cancel_receiver,
+            Ok(download_directory.clone()),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+
+        let crate::response::ResponseBody::Downloaded { path } = response.body else {
+            panic!("expected a downloaded response");
+        };
+        assert_eq!(path.parent(), Some(download_directory.as_path()));
+        assert_eq!(path.file_name().unwrap(), "image.png");
+        assert_eq!(std::fs::read(&path).unwrap(), response_bytes);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(download_directory).unwrap();
     }
 }

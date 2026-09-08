@@ -26,8 +26,12 @@ executing the command through a shell. Multipart rows support enabled/disabled t
 and file values, repeated names, native file selection, validation, inferred media
 types, and streamed file reads.
 
-Collections, automatic downloads, complete response charset handling, and JSON editor
-assistance remain in the next product milestones described in `PRODUCT.md`.
+Response handling classifies JSON, text, HTML source, attachments, and binary data.
+Supported text charsets are decoded with visible replacement/unsupported-charset
+notices. Attachments, binary bodies, and text exceeding the 5 MiB preview limit are
+streamed through collision-safe partial files into the OS-configured Downloads
+directory. Collections and JSON editor assistance remain in the next product
+milestones described in `PRODUCT.md`.
 
 Run the non-UI verification with:
 

@@ -139,6 +139,10 @@ pub fn build(application: &Application) {
     response_notebook.set_vexpand(true);
     let response_body = readonly_text_view();
     response_notebook.append_page(&scrolled(&response_body), Some(&Label::new(Some("Body"))));
+    let response_raw = readonly_text_view();
+    let response_raw_page = scrolled(&response_raw);
+    response_raw_page.set_visible(false);
+    response_notebook.append_page(&response_raw_page, Some(&Label::new(Some("Raw"))));
     let response_headers = readonly_text_view();
     response_notebook.append_page(
         &scrolled(&response_headers),
@@ -158,6 +162,8 @@ pub fn build(application: &Application) {
         let cancel = cancel.clone();
         let response_summary = response_summary.clone();
         let response_body = response_body.clone();
+        let response_raw = response_raw.clone();
+        let response_raw_page = response_raw_page.clone();
         let response_headers = response_headers.clone();
         let state = state.clone();
 
@@ -190,6 +196,8 @@ pub fn build(application: &Application) {
             response_summary.remove_css_class("error");
             response_summary.set_text("Sending request…");
             response_body.buffer().set_text("");
+            response_raw.buffer().set_text("");
+            response_raw_page.set_visible(false);
             response_headers.buffer().set_text("");
 
             let (result_sender, result_receiver) = mpsc::channel();
@@ -211,6 +219,8 @@ pub fn build(application: &Application) {
             let cancel = cancel.clone();
             let response_summary = response_summary.clone();
             let response_body = response_body.clone();
+            let response_raw = response_raw.clone();
+            let response_raw_page = response_raw_page.clone();
             let response_headers = response_headers.clone();
             glib::timeout_add_local(std::time::Duration::from_millis(30), move || {
                 match result_receiver.try_recv() {
@@ -223,6 +233,8 @@ pub fn build(application: &Application) {
                                 result,
                                 &response_summary,
                                 &response_body,
+                                &response_raw,
+                                &response_raw_page,
                                 &response_headers,
                             );
                         }
@@ -782,6 +794,8 @@ fn display_result(
     result: Result<ResponseData, String>,
     summary: &Label,
     body: &TextView,
+    raw: &TextView,
+    raw_page: &ScrolledWindow,
     headers: &TextView,
 ) {
     match result {
@@ -789,11 +803,20 @@ fn display_result(
             summary.remove_css_class("error");
             summary.set_text(&response.summary());
             body.buffer().set_text(&response.display_body());
+            if let Some(raw_body) = response.display_raw_body() {
+                raw.buffer().set_text(&raw_body);
+                raw_page.set_visible(true);
+            } else {
+                raw.buffer().set_text("");
+                raw_page.set_visible(false);
+            }
             headers.buffer().set_text(&response.display_headers());
         }
         Err(error) => {
             show_error(summary, &error);
             body.buffer().set_text("");
+            raw.buffer().set_text("");
+            raw_page.set_visible(false);
             headers.buffer().set_text("");
         }
     }

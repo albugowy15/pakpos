@@ -14,7 +14,10 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 - Validate URLs, headers, and JSON before sending.
 - Cancel an in-flight request or allow it to time out after 30 seconds.
 - Inspect status, elapsed time, received body size, headers, and a bounded 5 MiB response preview.
-- Pretty-print valid JSON responses.
+- Pretty-print valid JSON responses and inspect their raw source.
+- Display plain text and HTML source with supported charset decoding.
+- Stream attachments, binary responses, and oversized text responses to the configured
+  Downloads directory without silently overwriting files.
 - Copy the current request as a shell-safe cURL command.
 - Paste a supported cURL command to populate the method, URL, repeated headers, inline
   JSON body, and multipart text/file fields. Pasted commands are parsed as data and
@@ -33,7 +36,7 @@ Pakpos is under active development. The current build is a usable scratch-reques
 | Headers, JSON bodies, cancellation, and response inspection   | Available                                               |
 | Copy and paste cURL                                           | Available for supported headers, JSON, and multipart fields |
 | Multipart form-data and streamed file uploads                 | Available                                               |
-| Automatic binary downloads and charset handling               | Planned                                                 |
+| Response classification, downloads, and charset handling      | Available                                               |
 | JSON editor indentation and bracket completion                | Planned                                                 |
 | Local collections and Postman Collection v2.1 import/export   | Planned                                                 |
 | Full memory, accessibility, and interoperability verification | In progress                                             |

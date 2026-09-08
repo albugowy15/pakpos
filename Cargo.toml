@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 gtk = { package = "gtk4", version = "0.11.4", features = ["v4_10"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["multipart", "rustls", "stream"] }
+mime_guess = "2.0.5"
+percent-encoding = "2.3.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 shell-words = "1.1.1"
