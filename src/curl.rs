@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::models::{HeaderRow, HttpMethod, RequestBody, RequestDraft, RequestSnapshot};
+use crate::models::{
+    HeaderRow, HttpMethod, MultipartField, MultipartValue, RequestBody, RequestDraft,
+    RequestSnapshot,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurlImport {
@@ -47,9 +50,30 @@ pub fn to_command(draft: RequestDraft) -> Result<String, CurlError> {
         arguments.push(shell_quote(&value));
     }
 
-    if let RequestBody::Json(body) = snapshot.body {
-        arguments.push("--data-raw".to_owned());
-        arguments.push(shell_quote(&body));
+    match snapshot.body {
+        RequestBody::None => {}
+        RequestBody::Json(body) => {
+            arguments.push("--data-raw".to_owned());
+            arguments.push(shell_quote(&body));
+        }
+        RequestBody::Multipart(fields) => {
+            for field in fields {
+                match field.value {
+                    MultipartValue::Text(value) => {
+                        arguments.push("--form-string".to_owned());
+                        arguments.push(shell_quote(&format!("{}={value}", field.name)));
+                    }
+                    MultipartValue::File(path) => {
+                        arguments.push("--form".to_owned());
+                        arguments.push(shell_quote(&format!(
+                            "{}=@{}",
+                            field.name,
+                            quote_form_file_path(&path.to_string_lossy())
+                        )));
+                    }
+                }
+            }
+        }
     }
 
     Ok(arguments.join(" "))
@@ -75,6 +99,7 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
     let mut url = None;
     let mut headers = Vec::new();
     let mut data_parts = Vec::new();
+    let mut multipart_fields = Vec::new();
     let mut json_option = false;
     let mut warnings = Vec::new();
     let mut index = 1;
@@ -103,6 +128,8 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
                 "--data" | "--data-ascii" | "--data-raw" | "--data-binary" => {
                     data_parts.push(parse_inline_data(value, option)?)
                 }
+                "--form" => multipart_fields.push(parse_form(value, false)?),
+                "--form-string" => multipart_fields.push(parse_form(value, true)?),
                 "--json" => {
                     json_option = true;
                     data_parts.push(parse_inline_data(value, option)?);
@@ -147,10 +174,13 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
                     "Pakpos always verifies HTTPS certificates. Remove --insecure before pasting.",
                 ));
             }
-            "-F" | "--form" | "--form-string" => {
-                return Err(CurlError::new(
-                    "Multipart cURL imports are not available yet. Remove the form fields or enter this request manually.",
-                ));
+            "-F" | "--form" => {
+                let value = next_value(&arguments, &mut index, argument)?;
+                multipart_fields.push(parse_form(value, false)?);
+            }
+            "--form-string" => {
+                let value = next_value(&arguments, &mut index, argument)?;
+                multipart_fields.push(parse_form(value, true)?);
             }
             "--data-urlencode" | "-G" | "--get" | "-u" | "--user" | "-b" | "--cookie" | "-A"
             | "--user-agent" | "-e" | "--referer" | "-K" | "--config" | "--connect-timeout"
@@ -166,6 +196,9 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
             value if value.starts_with("-d") && value.len() > 2 => {
                 data_parts.push(parse_inline_data(&value[2..], "-d")?);
             }
+            value if value.starts_with("-F") && value.len() > 2 => {
+                multipart_fields.push(parse_form(&value[2..], false)?);
+            }
             value if value.starts_with('-') => return Err(unsupported_option(value)),
             value => set_url(&mut url, value)?,
         }
@@ -173,7 +206,14 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
     }
 
     let url = url.ok_or_else(|| CurlError::new("The cURL command does not contain a URL."))?;
-    let body = if data_parts.is_empty() {
+    if !data_parts.is_empty() && !multipart_fields.is_empty() {
+        return Err(CurlError::new(
+            "Pakpos cannot import a cURL command that mixes data and multipart form options.",
+        ));
+    }
+    let body = if !multipart_fields.is_empty() {
+        RequestBody::Multipart(multipart_fields)
+    } else if data_parts.is_empty() {
         RequestBody::None
     } else {
         let text = data_parts.join("&");
@@ -191,7 +231,7 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
         add_header_if_missing(&mut headers, "Content-Type", "application/json");
         add_header_if_missing(&mut headers, "Accept", "application/json");
     }
-    let inferred_method = if matches!(body, RequestBody::Json(_)) {
+    let inferred_method = if matches!(body, RequestBody::Json(_) | RequestBody::Multipart(_)) {
         HttpMethod::Post
     } else {
         HttpMethod::Get
@@ -202,7 +242,7 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
         headers,
         body,
     };
-    RequestSnapshot::try_from(request.clone())
+    RequestSnapshot::try_from_import(request.clone())
         .map_err(|error| CurlError::new(error.to_string()))?;
 
     Ok(CurlImport { request, warnings })
@@ -256,6 +296,94 @@ fn parse_inline_data(value: &str, option: &str) -> Result<String, CurlError> {
         )));
     }
     Ok(value.to_owned())
+}
+
+fn parse_form(value: &str, literal: bool) -> Result<MultipartField, CurlError> {
+    let (name, value) = value
+        .split_once('=')
+        .ok_or_else(|| CurlError::new("A multipart cURL field must use the form name=value."))?;
+    if name.is_empty() {
+        return Err(CurlError::new("A multipart cURL field needs a name."));
+    }
+    if literal {
+        return Ok(MultipartField::text(name, value));
+    }
+    if value.starts_with('<') {
+        return Err(CurlError::new(
+            "Multipart fields that read file contents as text are not supported. Use a text value or @file upload.",
+        ));
+    }
+    if let Some(path) = value.strip_prefix('@') {
+        if path.is_empty() {
+            return Err(CurlError::new("A multipart file field needs a path."));
+        }
+        return Ok(MultipartField::file(name, parse_form_file_path(path)?));
+    }
+    if value.contains(';') {
+        return Err(CurlError::new(
+            "Multipart form modifiers are not supported. Use --form-string for literal text.",
+        ));
+    }
+    Ok(MultipartField::text(name, value))
+}
+
+fn quote_form_file_path(path: &str) -> String {
+    let mut quoted = String::with_capacity(path.len() + 2);
+    quoted.push('"');
+    for character in path.chars() {
+        if matches!(character, '"' | '\\') {
+            quoted.push('\\');
+        }
+        quoted.push(character);
+    }
+    quoted.push('"');
+    quoted
+}
+
+fn parse_form_file_path(value: &str) -> Result<String, CurlError> {
+    if !value.starts_with('"') {
+        if value.contains(';') {
+            return Err(CurlError::new(
+                "Multipart file modifiers are not supported. Select the file directly in Pakpos.",
+            ));
+        }
+        return Ok(value.to_owned());
+    }
+
+    let mut path = String::new();
+    let mut characters = value[1..].chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '"' => {
+                if characters.next().is_some() {
+                    return Err(CurlError::new(
+                        "Multipart file modifiers are not supported. Select the file directly in Pakpos.",
+                    ));
+                }
+                if path.is_empty() {
+                    return Err(CurlError::new("A multipart file field needs a path."));
+                }
+                return Ok(path);
+            }
+            '\\' => match characters.next() {
+                Some(next @ ('"' | '\\')) => path.push(next),
+                Some(next) => {
+                    path.push('\\');
+                    path.push(next);
+                }
+                None => {
+                    return Err(CurlError::new(
+                        "The quoted multipart file path ends with an incomplete escape.",
+                    ));
+                }
+            },
+            _ => path.push(character),
+        }
+    }
+
+    Err(CurlError::new(
+        "The multipart file path has an unclosed quote.",
+    ))
 }
 
 fn set_url(url: &mut Option<String>, value: &str) -> Result<(), CurlError> {
@@ -429,5 +557,72 @@ mod tests {
         assert!(command.contains("--header 'X-Empty;'"));
         let imported = from_command(&command).unwrap();
         assert_eq!(imported.request.headers[0].value, "");
+    }
+
+    #[test]
+    fn round_trips_multipart_text_and_file_fields() {
+        let file_path = std::env::current_dir().unwrap().join("Cargo.toml");
+        let request = RequestDraft {
+            method: HttpMethod::Patch,
+            url: "https://example.com/upload".to_owned(),
+            headers: Vec::new(),
+            body: RequestBody::Multipart(vec![
+                MultipartField::text("tag", "one"),
+                MultipartField::text("tag", "@literal"),
+                MultipartField::file("asset", &file_path),
+            ]),
+        };
+
+        let command = to_command(request.clone()).unwrap();
+        assert!(command.contains("--form-string 'tag=@literal'"));
+        let imported = from_command(&command).unwrap();
+        assert_eq!(imported.request, request);
+    }
+
+    #[test]
+    fn imports_unavailable_multipart_file_for_reselection() {
+        let unavailable = "/missing/pakpos-import-review-file.bin";
+        let imported = from_command(&format!(
+            "curl --form 'asset=@{unavailable}' https://example.com/upload"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            imported.request.body,
+            RequestBody::Multipart(vec![MultipartField::file("asset", unavailable)])
+        );
+        assert!(matches!(
+            RequestSnapshot::try_from(imported.request).unwrap_err(),
+            crate::models::ValidationError::UnreadableMultipartFile { row: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn round_trips_semicolon_in_multipart_file_path() {
+        let file_path =
+            std::env::temp_dir().join(format!("pakpos-curl;review-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&file_path, b"review fixture").unwrap();
+        let request = RequestDraft {
+            method: HttpMethod::Post,
+            url: "https://example.com/upload".to_owned(),
+            headers: Vec::new(),
+            body: RequestBody::Multipart(vec![MultipartField::file("asset", &file_path)]),
+        };
+
+        let command = to_command(request.clone()).unwrap();
+        assert!(command.contains("=@\""));
+        assert!(command.contains(';'));
+        let imported = from_command(&command).unwrap();
+        assert_eq!(imported.request, request);
+        std::fs::remove_file(file_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_multipart_modifiers_and_mixed_body_modes() {
+        assert!(
+            from_command("curl -F 'asset=@Cargo.toml;type=text/plain' https://example.com")
+                .is_err()
+        );
+        assert!(from_command("curl -d '{}' -F 'name=value' https://example.com").is_err());
     }
 }
