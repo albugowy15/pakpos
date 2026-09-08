@@ -3,11 +3,14 @@ use std::{fmt, time::Instant};
 use reqwest::{
     Client,
     header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
+    multipart::{Form, Part},
     redirect::Policy,
 };
 use tokio::sync::oneshot;
 
-use crate::models::{REQUEST_TIMEOUT, RESPONSE_PREVIEW_LIMIT, RequestBody, RequestSnapshot};
+use crate::models::{
+    MultipartValue, REQUEST_TIMEOUT, RESPONSE_PREVIEW_LIMIT, RequestBody, RequestSnapshot,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponseHeader {
@@ -82,6 +85,7 @@ pub enum RequestError {
     Cancelled,
     Timeout,
     InvalidHeader { name: String, reason: String },
+    File { path: String, reason: String },
     Transport(reqwest::Error),
 }
 
@@ -92,6 +96,12 @@ impl fmt::Display for RequestError {
             Self::Timeout => formatter.write_str("The request timed out after 30 seconds."),
             Self::InvalidHeader { name, reason } => {
                 write!(formatter, "Header ‘{name}’ could not be sent: {reason}.")
+            }
+            Self::File { path, reason } => {
+                write!(
+                    formatter,
+                    "Could not read multipart file ‘{path}’: {reason}."
+                )
             }
             Self::Transport(error) if error.is_connect() => {
                 write!(formatter, "Could not connect to the server: {error}")
@@ -144,11 +154,33 @@ async fn execute_inner(snapshot: RequestSnapshot) -> Result<ResponseData, Reques
     let mut request = client
         .request(snapshot.method.into(), snapshot.url)
         .headers(headers);
-    if let RequestBody::Json(body) = snapshot.body {
-        if !has_content_type {
-            request = request.header(CONTENT_TYPE, "application/json");
+    match snapshot.body {
+        RequestBody::None => {}
+        RequestBody::Json(body) => {
+            if !has_content_type {
+                request = request.header(CONTENT_TYPE, "application/json");
+            }
+            request = request.body(body);
         }
-        request = request.body(body);
+        RequestBody::Multipart(fields) => {
+            let mut form = Form::new();
+            for field in fields {
+                form = match field.value {
+                    MultipartValue::Text(value) => form.text(field.name, value),
+                    MultipartValue::File(path) => {
+                        let display_path = path.display().to_string();
+                        let part = Part::file(&path)
+                            .await
+                            .map_err(|error| RequestError::File {
+                                path: display_path,
+                                reason: error.to_string(),
+                            })?;
+                        form.part(field.name, part)
+                    }
+                };
+            }
+            request = request.multipart(form);
+        }
     }
 
     let started = Instant::now();
@@ -304,5 +336,87 @@ mod tests {
             2
         );
         assert_eq!(response.display_body(), "{\n  \"ok\": true\n}");
+    }
+
+    #[tokio::test]
+    async fn streams_multipart_text_and_file_fields() {
+        let file_path = std::env::temp_dir().join(format!(
+            "pakpos-multipart-test-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&file_path, b"streamed file bytes").unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_sender, request_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut expected_length = None;
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if expected_length.is_none()
+                    && let Some(header_end) =
+                        request.windows(4).position(|part| part == b"\r\n\r\n")
+                {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers.lines().find_map(|line| {
+                        line.strip_prefix("content-length: ")
+                            .and_then(|value| value.parse::<usize>().ok())
+                    });
+                    expected_length = content_length.map(|length| (header_end + 4, length));
+                }
+                if expected_length
+                    .is_some_and(|(body_start, length)| request.len() >= body_start + length)
+                {
+                    break;
+                }
+            }
+            request_sender.send(request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+
+        let draft = RequestDraft {
+            method: HttpMethod::Post,
+            url: format!("http://{address}/upload"),
+            headers: Vec::new(),
+            body: RequestBody::Multipart(vec![
+                crate::models::MultipartField::text("tag", "one"),
+                crate::models::MultipartField::text("tag", "two"),
+                crate::models::MultipartField::file("asset", &file_path),
+            ]),
+        };
+        let snapshot = RequestSnapshot::try_from(draft).unwrap();
+        let (_cancel_sender, cancel_receiver) = oneshot::channel();
+        let response = execute(snapshot, cancel_receiver).await.unwrap();
+        let request = String::from_utf8(request_receiver.recv().unwrap()).unwrap();
+        server.join().unwrap();
+        std::fs::remove_file(file_path).unwrap();
+
+        assert!(request.starts_with("POST /upload HTTP/1.1\r\n"));
+        assert!(request.contains("content-type: multipart/form-data; boundary="));
+        assert_eq!(request.matches("name=\"tag\"").count(), 2);
+        assert!(request.contains("\r\n\r\none\r\n"));
+        assert!(request.contains("\r\n\r\ntwo\r\n"));
+        assert!(request.contains("name=\"asset\""));
+        assert!(request.contains("filename=\""));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("content-type: text/plain")
+        );
+        assert!(request.contains("\r\n\r\nstreamed file bytes\r\n"));
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body_size, 0);
     }
 }

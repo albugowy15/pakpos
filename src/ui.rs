@@ -7,12 +7,15 @@ use std::{
 
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry,
-    HeaderBar, Label, MenuButton, Notebook, Orientation, Paned, PolicyType, ScrolledWindow,
-    Separator, TextView, gio, glib, prelude::*,
+    FileDialog, HeaderBar, Label, MenuButton, Notebook, Orientation, Paned, PolicyType,
+    ScrolledWindow, Separator, TextView, gio, glib, prelude::*,
 };
 use pakpos::{
     curl::{from_command, to_command},
-    models::{HeaderRow, HttpMethod, RequestBody, RequestDraft, RequestSnapshot},
+    models::{
+        HeaderRow, HttpMethod, MultipartField, MultipartValue, RequestBody, RequestDraft,
+        RequestSnapshot,
+    },
     net::{ResponseData, execute},
 };
 use tokio::sync::oneshot;
@@ -23,6 +26,23 @@ struct HeaderWidgets {
     enabled: CheckButton,
     name: Entry,
     value: Entry,
+}
+
+#[derive(Clone)]
+struct MultipartWidgets {
+    row: GtkBox,
+    enabled: CheckButton,
+    name: Entry,
+    kind: DropDown,
+    value: Entry,
+}
+
+#[derive(Clone)]
+struct BodyWidgets {
+    mode: DropDown,
+    json_editor: TextView,
+    multipart_box: GtkBox,
+    multipart_rows: Rc<RefCell<Vec<MultipartWidgets>>>,
 }
 
 #[derive(Default)]
@@ -102,7 +122,7 @@ pub fn build(application: &Application) {
     let request_notebook = Notebook::new();
     let (headers_page, headers_box, header_rows) = build_headers_page();
     request_notebook.append_page(&headers_page, Some(&Label::new(Some("Headers"))));
-    let (body_page, body_mode, json_editor) = build_body_page();
+    let (body_page, body) = build_body_page(&window);
     request_notebook.append_page(&body_page, Some(&Label::new(Some("Body"))));
     main.append(&request_notebook);
     main.append(&Separator::new(Orientation::Horizontal));
@@ -132,8 +152,7 @@ pub fn build(application: &Application) {
     let send_request: Rc<dyn Fn()> = Rc::new({
         let method = method.clone();
         let url = url.clone();
-        let body_mode = body_mode.clone();
-        let json_editor = json_editor.clone();
+        let body = body.clone();
         let header_rows = header_rows.clone();
         let send_group = send_group.clone();
         let cancel = cancel.clone();
@@ -147,13 +166,7 @@ pub fn build(application: &Application) {
                 return;
             }
 
-            let draft = match collect_request_draft(
-                &method,
-                &url,
-                &header_rows,
-                &body_mode,
-                &json_editor,
-            ) {
+            let draft = match collect_request_draft(&method, &url, &header_rows, &body) {
                 Ok(draft) => draft,
                 Err(error) => {
                     show_error(&response_summary, &error);
@@ -249,14 +262,12 @@ pub fn build(application: &Application) {
         let method = method.clone();
         let url = url.clone();
         let header_rows = header_rows.clone();
-        let body_mode = body_mode.clone();
-        let json_editor = json_editor.clone();
+        let body = body.clone();
         let response_summary = response_summary.clone();
         let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
         move |_, _| {
-            let result =
-                collect_request_draft(&method, &url, &header_rows, &body_mode, &json_editor)
-                    .and_then(|draft| to_command(draft).map_err(|error| error.to_string()));
+            let result = collect_request_draft(&method, &url, &header_rows, &body)
+                .and_then(|draft| to_command(draft).map_err(|error| error.to_string()));
             match result {
                 Ok(command) => {
                     clipboard.set_text(&command);
@@ -274,8 +285,7 @@ pub fn build(application: &Application) {
         let url = url.clone();
         let headers_box = headers_box.clone();
         let header_rows = header_rows.clone();
-        let body_mode = body_mode.clone();
-        let json_editor = json_editor.clone();
+        let body = body.clone();
         let response_summary = response_summary.clone();
         let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
         move |_, _| {
@@ -284,8 +294,7 @@ pub fn build(application: &Application) {
                 let url = url.clone();
                 let headers_box = headers_box.clone();
                 let header_rows = header_rows.clone();
-                let body_mode = body_mode.clone();
-                let json_editor = json_editor.clone();
+                let body = body.clone();
                 let response_summary = response_summary.clone();
                 move |result| match result {
                     Ok(Some(text)) => match from_command(&text) {
@@ -296,8 +305,7 @@ pub fn build(application: &Application) {
                                 &url,
                                 &headers_box,
                                 &header_rows,
-                                &body_mode,
-                                &json_editor,
+                                &body,
                             );
                             let message = if import.warnings.is_empty() {
                                 "Pasted the cURL request.".to_owned()
@@ -434,7 +442,7 @@ fn add_header_row(container: &GtkBox, rows: &Rc<RefCell<Vec<HeaderWidgets>>>) {
     });
 }
 
-fn build_body_page() -> (GtkBox, DropDown, TextView) {
+fn build_body_page(window: &ApplicationWindow) -> (GtkBox, BodyWidgets) {
     let page = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(6)
@@ -443,7 +451,7 @@ fn build_body_page() -> (GtkBox, DropDown, TextView) {
         .margin_start(8)
         .margin_end(8)
         .build();
-    let mode = DropDown::from_strings(&["None", "JSON"]);
+    let mode = DropDown::from_strings(&["None", "JSON", "Multipart"]);
     mode.set_halign(Align::Start);
     let editor = TextView::builder()
         .monospace(true)
@@ -456,13 +464,138 @@ fn build_body_page() -> (GtkBox, DropDown, TextView) {
     let editor_scroll = scrolled(&editor);
     editor_scroll.set_min_content_height(150);
     editor_scroll.set_visible(false);
+
+    let multipart_panel = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(6)
+        .build();
+    let multipart_box = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(4)
+        .build();
+    let multipart_rows = Rc::new(RefCell::new(Vec::new()));
+    add_multipart_row(&multipart_box, &multipart_rows, window);
+    let add = Button::with_label("Add field");
+    add.set_halign(Align::Start);
+    add.connect_clicked({
+        let multipart_box = multipart_box.clone();
+        let multipart_rows = multipart_rows.clone();
+        let window = window.clone();
+        move |_| add_multipart_row(&multipart_box, &multipart_rows, &window)
+    });
+    multipart_panel.append(&multipart_box);
+    multipart_panel.append(&add);
+    let multipart_scroll = scrolled(&multipart_panel);
+    multipart_scroll.set_min_content_height(150);
+    multipart_scroll.set_visible(false);
+
     mode.connect_selected_notify({
         let editor_scroll = editor_scroll.clone();
-        move |mode| editor_scroll.set_visible(mode.selected() == 1)
+        let multipart_scroll = multipart_scroll.clone();
+        move |mode| {
+            editor_scroll.set_visible(mode.selected() == 1);
+            multipart_scroll.set_visible(mode.selected() == 2);
+        }
     });
     page.append(&mode);
     page.append(&editor_scroll);
-    (page, mode, editor)
+    page.append(&multipart_scroll);
+    (
+        page,
+        BodyWidgets {
+            mode,
+            json_editor: editor,
+            multipart_box,
+            multipart_rows,
+        },
+    )
+}
+
+fn add_multipart_row(
+    container: &GtkBox,
+    rows: &Rc<RefCell<Vec<MultipartWidgets>>>,
+    window: &ApplicationWindow,
+) {
+    let row = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    let enabled = CheckButton::builder()
+        .active(true)
+        .tooltip_text("Send this multipart field")
+        .build();
+    let name = Entry::builder()
+        .placeholder_text("Field name")
+        .hexpand(true)
+        .build();
+    let kind = DropDown::from_strings(&["Text", "File"]);
+    kind.set_tooltip_text(Some("Multipart field type"));
+    let value = Entry::builder()
+        .placeholder_text("Text value")
+        .hexpand(true)
+        .build();
+    let browse = Button::with_label("Choose…");
+    browse.set_visible(false);
+    let remove = Button::with_label("Remove");
+    name.add_css_class("monospace");
+    value.add_css_class("monospace");
+
+    kind.connect_selected_notify({
+        let value = value.clone();
+        let browse = browse.clone();
+        move |kind| {
+            let is_file = kind.selected() == 1;
+            value.set_placeholder_text(Some(if is_file { "File path" } else { "Text value" }));
+            browse.set_visible(is_file);
+        }
+    });
+    browse.connect_clicked({
+        let value = value.clone();
+        let window = window.clone();
+        move |_| {
+            let dialog = FileDialog::builder()
+                .title("Choose multipart file")
+                .modal(true)
+                .build();
+            let value = value.clone();
+            dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    value.set_text(&path.to_string_lossy());
+                }
+            });
+        }
+    });
+
+    row.append(&enabled);
+    row.append(&name);
+    row.append(&kind);
+    row.append(&value);
+    row.append(&browse);
+    row.append(&remove);
+    container.append(&row);
+    rows.borrow_mut().push(MultipartWidgets {
+        row: row.clone(),
+        enabled,
+        name,
+        kind,
+        value,
+    });
+    remove.connect_clicked({
+        let container = container.clone();
+        let rows = rows.clone();
+        move |_| {
+            let index = {
+                let rows = rows.borrow();
+                rows.iter().position(|item| item.row == row)
+            };
+            if let Some(index) = index {
+                let removed = rows.borrow_mut().remove(index);
+                container.remove(&removed.row);
+            }
+        }
+    });
 }
 
 fn readonly_text_view() -> TextView {
@@ -497,8 +630,7 @@ fn collect_request_draft(
     method: &DropDown,
     url: &Entry,
     header_rows: &Rc<RefCell<Vec<HeaderWidgets>>>,
-    body_mode: &DropDown,
-    json_editor: &TextView,
+    body_widgets: &BodyWidgets,
 ) -> Result<RequestDraft, String> {
     let method = HttpMethod::ALL
         .get(method.selected() as usize)
@@ -513,10 +645,26 @@ fn collect_request_draft(
             value: widgets.value.text().to_string(),
         })
         .collect();
-    let body = if body_mode.selected() == 1 {
-        RequestBody::Json(buffer_text(json_editor))
-    } else {
-        RequestBody::None
+    let body = match body_widgets.mode.selected() {
+        0 => RequestBody::None,
+        1 => RequestBody::Json(buffer_text(&body_widgets.json_editor)),
+        2 => RequestBody::Multipart(
+            body_widgets
+                .multipart_rows
+                .borrow()
+                .iter()
+                .map(|widgets| MultipartField {
+                    enabled: widgets.enabled.is_active(),
+                    name: widgets.name.text().to_string(),
+                    value: if widgets.kind.selected() == 1 {
+                        MultipartValue::File(widgets.value.text().as_str().into())
+                    } else {
+                        MultipartValue::Text(widgets.value.text().to_string())
+                    },
+                })
+                .collect(),
+        ),
+        _ => return Err("Select a request body mode.".to_owned()),
     };
     Ok(RequestDraft {
         method,
@@ -532,8 +680,7 @@ fn apply_request_draft(
     url: &Entry,
     headers_box: &GtkBox,
     header_rows: &Rc<RefCell<Vec<HeaderWidgets>>>,
-    body_mode: &DropDown,
-    json_editor: &TextView,
+    body_widgets: &BodyWidgets,
 ) {
     let method_index = HttpMethod::ALL
         .iter()
@@ -561,12 +708,57 @@ fn apply_request_draft(
 
     match draft.body {
         RequestBody::None => {
-            body_mode.set_selected(0);
-            json_editor.buffer().set_text("");
+            body_widgets.mode.set_selected(0);
+            body_widgets.json_editor.buffer().set_text("");
+            reset_multipart_rows(body_widgets, &[]);
         }
         RequestBody::Json(body) => {
-            body_mode.set_selected(1);
-            json_editor.buffer().set_text(&body);
+            body_widgets.mode.set_selected(1);
+            body_widgets.json_editor.buffer().set_text(&body);
+            reset_multipart_rows(body_widgets, &[]);
+        }
+        RequestBody::Multipart(fields) => {
+            body_widgets.mode.set_selected(2);
+            body_widgets.json_editor.buffer().set_text("");
+            reset_multipart_rows(body_widgets, &fields);
+        }
+    }
+}
+
+fn reset_multipart_rows(body: &BodyWidgets, fields: &[MultipartField]) {
+    let old_rows = std::mem::take(&mut *body.multipart_rows.borrow_mut());
+    for widgets in old_rows {
+        body.multipart_box.remove(&widgets.row);
+    }
+
+    // Imported cURL requests are applied to an existing window, so recover the
+    // window from the row container instead of retaining a second owner reference.
+    let Some(window) = body
+        .multipart_box
+        .root()
+        .and_then(|root| root.downcast::<ApplicationWindow>().ok())
+    else {
+        return;
+    };
+    if fields.is_empty() {
+        add_multipart_row(&body.multipart_box, &body.multipart_rows, &window);
+        return;
+    }
+    for field in fields {
+        add_multipart_row(&body.multipart_box, &body.multipart_rows, &window);
+        if let Some(widgets) = body.multipart_rows.borrow().last() {
+            widgets.enabled.set_active(field.enabled);
+            widgets.name.set_text(&field.name);
+            match &field.value {
+                MultipartValue::Text(value) => {
+                    widgets.kind.set_selected(0);
+                    widgets.value.set_text(value);
+                }
+                MultipartValue::File(path) => {
+                    widgets.kind.set_selected(1);
+                    widgets.value.set_text(&path.to_string_lossy());
+                }
+            }
         }
     }
 }

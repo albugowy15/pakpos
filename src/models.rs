@@ -1,4 +1,4 @@
-use std::{fmt, str::FromStr, time::Duration};
+use std::{fmt, path::PathBuf, str::FromStr, time::Duration};
 
 use reqwest::{Method, Url, header::HeaderName};
 use serde::{Deserialize, Serialize};
@@ -102,6 +102,47 @@ pub enum RequestBody {
     #[default]
     None,
     Json(String),
+    Multipart(Vec<MultipartField>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum MultipartValue {
+    Text(String),
+    File(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultipartField {
+    pub enabled: bool,
+    pub name: String,
+    pub value: MultipartValue,
+}
+
+impl MultipartField {
+    pub fn text(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            name: name.into(),
+            value: MultipartValue::Text(value.into()),
+        }
+    }
+
+    pub fn file(name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Self {
+            enabled: true,
+            name: name.into(),
+            value: MultipartValue::File(path.into()),
+        }
+    }
+
+    fn is_blank(&self) -> bool {
+        self.name.trim().is_empty()
+            && match &self.value {
+                MultipartValue::Text(value) => value.is_empty(),
+                MultipartValue::File(path) => path.as_os_str().is_empty(),
+            }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +165,16 @@ impl TryFrom<RequestDraft> for RequestSnapshot {
     type Error = ValidationError;
 
     fn try_from(draft: RequestDraft) -> Result<Self, Self::Error> {
+        Self::from_draft(draft, true)
+    }
+}
+
+impl RequestSnapshot {
+    pub(crate) fn try_from_import(draft: RequestDraft) -> Result<Self, ValidationError> {
+        Self::from_draft(draft, false)
+    }
+
+    fn from_draft(draft: RequestDraft, validate_files: bool) -> Result<Self, ValidationError> {
         let entered_url = draft.url.trim();
         if entered_url.is_empty() {
             return Err(ValidationError::MissingUrl);
@@ -158,24 +209,80 @@ impl TryFrom<RequestDraft> for RequestSnapshot {
             headers.push(header);
         }
 
-        if let RequestBody::Json(text) = &draft.body {
-            if text.trim().is_empty() {
-                return Err(ValidationError::EmptyJsonBody);
-            }
-            serde_json::from_str::<serde_json::Value>(text).map_err(|error| {
-                ValidationError::InvalidJson {
-                    line: error.line(),
-                    column: error.column(),
-                    message: error.to_string(),
+        let body = match draft.body {
+            RequestBody::None => RequestBody::None,
+            RequestBody::Json(text) => {
+                if text.trim().is_empty() {
+                    return Err(ValidationError::EmptyJsonBody);
                 }
-            })?;
-        }
+                serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
+                    ValidationError::InvalidJson {
+                        line: error.line(),
+                        column: error.column(),
+                        message: error.to_string(),
+                    }
+                })?;
+                RequestBody::Json(text)
+            }
+            RequestBody::Multipart(fields) => {
+                if headers
+                    .iter()
+                    .any(|header| header.name.eq_ignore_ascii_case("content-type"))
+                {
+                    return Err(ValidationError::MultipartContentType);
+                }
+
+                let mut validated = Vec::with_capacity(fields.len());
+                for (index, field) in fields.into_iter().enumerate() {
+                    if !field.enabled || field.is_blank() {
+                        continue;
+                    }
+                    let row = index + 1;
+                    if field.name.trim().is_empty() {
+                        return Err(ValidationError::MissingMultipartName { row });
+                    }
+                    if field.name.contains(['\r', '\n']) {
+                        return Err(ValidationError::MultipartNameContainsNewline { row });
+                    }
+                    if let MultipartValue::File(path) = &field.value {
+                        if path.as_os_str().is_empty() {
+                            return Err(ValidationError::MissingMultipartFile { row });
+                        }
+                        if validate_files {
+                            let metadata = std::fs::metadata(path).map_err(|error| {
+                                ValidationError::UnreadableMultipartFile {
+                                    row,
+                                    path: path.clone(),
+                                    reason: error.to_string(),
+                                }
+                            })?;
+                            if !metadata.is_file() {
+                                return Err(ValidationError::UnreadableMultipartFile {
+                                    row,
+                                    path: path.clone(),
+                                    reason: "the selected path is not a regular file".to_owned(),
+                                });
+                            }
+                            std::fs::File::open(path).map_err(|error| {
+                                ValidationError::UnreadableMultipartFile {
+                                    row,
+                                    path: path.clone(),
+                                    reason: error.to_string(),
+                                }
+                            })?;
+                        }
+                    }
+                    validated.push(field);
+                }
+                RequestBody::Multipart(validated)
+            }
+        };
 
         Ok(Self {
             method: draft.method,
             url,
             headers,
-            body: draft.body,
+            body,
         })
     }
 }
@@ -203,6 +310,21 @@ pub enum ValidationError {
         column: usize,
         message: String,
     },
+    MissingMultipartName {
+        row: usize,
+    },
+    MultipartNameContainsNewline {
+        row: usize,
+    },
+    MissingMultipartFile {
+        row: usize,
+    },
+    UnreadableMultipartFile {
+        row: usize,
+        path: PathBuf,
+        reason: String,
+    },
+    MultipartContentType,
 }
 
 impl fmt::Display for ValidationError {
@@ -233,6 +355,23 @@ impl fmt::Display for ValidationError {
                 formatter,
                 "The JSON body is invalid at line {line}, column {column}: {message}"
             ),
+            Self::MissingMultipartName { row } => {
+                write!(formatter, "Multipart row {row} needs a field name.")
+            }
+            Self::MultipartNameContainsNewline { row } => {
+                write!(formatter, "Multipart row {row} has a line break in its name.")
+            }
+            Self::MissingMultipartFile { row } => {
+                write!(formatter, "Multipart row {row} needs a file.")
+            }
+            Self::UnreadableMultipartFile { row, path, reason } => write!(
+                formatter,
+                "The file in multipart row {row} cannot be read ({}): {reason}.",
+                path.display()
+            ),
+            Self::MultipartContentType => formatter.write_str(
+                "Remove the manual Content-Type header. Pakpos generates the multipart boundary automatically.",
+            ),
         }
     }
 }
@@ -242,6 +381,12 @@ impl std::error::Error for ValidationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temporary_file(contents: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("pakpos-model-test-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
 
     fn draft(url: &str) -> RequestDraft {
         RequestDraft {
@@ -297,6 +442,65 @@ mod tests {
         assert!(matches!(
             error,
             ValidationError::InvalidJson { line: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn validates_and_filters_multipart_fields() {
+        let path = temporary_file(b"file bytes");
+        let mut value = draft("https://example.com/upload");
+        value.body = RequestBody::Multipart(vec![
+            MultipartField::text("tag", "one"),
+            MultipartField {
+                enabled: false,
+                name: "ignored".to_owned(),
+                value: MultipartValue::File("/missing/disabled-file".into()),
+            },
+            MultipartField::text("tag", ""),
+            MultipartField::file("asset", &path),
+            MultipartField::text("", ""),
+        ]);
+
+        let snapshot = RequestSnapshot::try_from(value).unwrap();
+        let RequestBody::Multipart(fields) = snapshot.body else {
+            panic!("expected multipart body");
+        };
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].name, "tag");
+        assert_eq!(fields[1].name, "tag");
+        assert_eq!(fields[2].name, "asset");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_manual_multipart_content_type() {
+        let mut value = draft("https://example.com/upload");
+        value.headers = vec![HeaderRow::enabled("Content-Type", "multipart/form-data")];
+        value.body = RequestBody::Multipart(vec![MultipartField::text("name", "Pakpos")]);
+
+        assert_eq!(
+            RequestSnapshot::try_from(value).unwrap_err(),
+            ValidationError::MultipartContentType
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_unreadable_multipart_files() {
+        let mut missing = draft("https://example.com/upload");
+        missing.body = RequestBody::Multipart(vec![MultipartField::file("asset", "")]);
+        assert!(matches!(
+            RequestSnapshot::try_from(missing).unwrap_err(),
+            ValidationError::MissingMultipartFile { row: 1 }
+        ));
+
+        let mut unreadable = draft("https://example.com/upload");
+        unreadable.body = RequestBody::Multipart(vec![MultipartField::file(
+            "asset",
+            "/missing/pakpos-test-file",
+        )]);
+        assert!(matches!(
+            RequestSnapshot::try_from(unreadable).unwrap_err(),
+            ValidationError::UnreadableMultipartFile { row: 1, .. }
         ));
     }
 }
