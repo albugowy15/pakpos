@@ -1,6 +1,9 @@
 use std::{fmt, path::PathBuf, str::FromStr, time::Duration};
 
-use reqwest::{Method, Url, header::HeaderName};
+use reqwest::{
+    Method, Url,
+    header::{HeaderName, HeaderValue},
+};
 use serde::{Deserialize, Serialize};
 
 pub const RESPONSE_PREVIEW_LIMIT: usize = 5 * 1024 * 1024;
@@ -145,37 +148,26 @@ impl MultipartField {
     }
 }
 
+/// A request as edited and persisted by Pakpos.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestDraft {
+pub struct Request {
     pub method: HttpMethod,
     pub url: String,
     pub headers: Vec<HeaderRow>,
     pub body: RequestBody,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RequestSnapshot {
-    pub method: HttpMethod,
-    pub url: Url,
-    pub headers: Vec<HeaderRow>,
-    pub body: RequestBody,
-}
-
-impl TryFrom<RequestDraft> for RequestSnapshot {
-    type Error = ValidationError;
-
-    fn try_from(draft: RequestDraft) -> Result<Self, Self::Error> {
-        Self::from_draft(draft, true)
-    }
-}
-
-impl RequestSnapshot {
-    pub(crate) fn try_from_import(draft: RequestDraft) -> Result<Self, ValidationError> {
-        Self::from_draft(draft, false)
+impl Request {
+    pub fn validated(self) -> Result<Self, ValidationError> {
+        self.validate(true)
     }
 
-    fn from_draft(draft: RequestDraft, validate_files: bool) -> Result<Self, ValidationError> {
-        let entered_url = draft.url.trim();
+    pub(crate) fn validated_for_import(self) -> Result<Self, ValidationError> {
+        self.validate(false)
+    }
+
+    fn validate(mut self, validate_files: bool) -> Result<Self, ValidationError> {
+        let entered_url = self.url.trim();
         if entered_url.is_empty() {
             return Err(ValidationError::MissingUrl);
         }
@@ -192,8 +184,9 @@ impl RequestSnapshot {
             });
         }
 
-        let mut headers = Vec::with_capacity(draft.headers.len());
-        for (index, header) in draft.headers.into_iter().enumerate() {
+        self.url = entered_url.to_owned();
+        let mut headers = Vec::with_capacity(self.headers.len());
+        for (index, header) in self.headers.into_iter().enumerate() {
             if header.is_blank() || !header.enabled {
                 continue;
             }
@@ -206,10 +199,12 @@ impl RequestSnapshot {
             }
             HeaderName::from_bytes(header.name.as_bytes())
                 .map_err(|_| ValidationError::InvalidHeaderName { row })?;
+            HeaderValue::from_str(&header.value)
+                .map_err(|_| ValidationError::InvalidHeaderValue { row })?;
             headers.push(header);
         }
 
-        let body = match draft.body {
+        let body = match self.body {
             RequestBody::None => RequestBody::None,
             RequestBody::Json(text) => {
                 if text.trim().is_empty() {
@@ -278,12 +273,9 @@ impl RequestSnapshot {
             }
         };
 
-        Ok(Self {
-            method: draft.method,
-            url,
-            headers,
-            body,
-        })
+        self.headers = headers;
+        self.body = body;
+        Ok(self)
     }
 }
 
@@ -302,6 +294,9 @@ pub enum ValidationError {
         row: usize,
     },
     HeaderContainsNewline {
+        row: usize,
+    },
+    InvalidHeaderValue {
         row: usize,
     },
     EmptyJsonBody,
@@ -346,6 +341,9 @@ impl fmt::Display for ValidationError {
             Self::HeaderContainsNewline { row } => {
                 write!(formatter, "Header row {row} contains a line break.")
             }
+            Self::InvalidHeaderValue { row } => {
+                write!(formatter, "Header row {row} has an invalid value.")
+            }
             Self::EmptyJsonBody => formatter.write_str("Enter a JSON body or select None."),
             Self::InvalidJson {
                 line,
@@ -388,28 +386,30 @@ mod tests {
         path
     }
 
-    fn draft(url: &str) -> RequestDraft {
-        RequestDraft {
+    fn request(url: &str) -> Request {
+        Request {
             url: url.to_owned(),
-            ..RequestDraft::default()
+            ..Request::default()
         }
     }
 
     #[test]
     fn accepts_http_url_without_rewriting_query_order() {
-        let snapshot = RequestSnapshot::try_from(draft("https://example.com/x?b=2&a=1")).unwrap();
-        assert_eq!(snapshot.url.as_str(), "https://example.com/x?b=2&a=1");
+        let request = request("https://example.com/x?b=2&a=1")
+            .validated()
+            .unwrap();
+        assert_eq!(request.url, "https://example.com/x?b=2&a=1");
     }
 
     #[test]
     fn rejects_non_http_scheme() {
-        let error = RequestSnapshot::try_from(draft("file:///tmp/example")).unwrap_err();
+        let error = request("file:///tmp/example").validated().unwrap_err();
         assert_eq!(error, ValidationError::UnsupportedScheme("file".to_owned()));
     }
 
     #[test]
     fn keeps_enabled_duplicate_headers_in_order() {
-        let mut value = draft("http://localhost:3000");
+        let mut value = request("http://localhost:3000");
         value.headers = vec![
             HeaderRow::enabled("X-Tag", "first"),
             HeaderRow {
@@ -419,26 +419,36 @@ mod tests {
             },
             HeaderRow::enabled("X-Tag", "second"),
         ];
-        let snapshot = RequestSnapshot::try_from(value).unwrap();
-        assert_eq!(snapshot.headers.len(), 2);
-        assert_eq!(snapshot.headers[0].value, "first");
-        assert_eq!(snapshot.headers[1].value, "second");
+        let request = value.validated().unwrap();
+        assert_eq!(request.headers.len(), 2);
+        assert_eq!(request.headers[0].value, "first");
+        assert_eq!(request.headers[1].value, "second");
+    }
+
+    #[test]
+    fn rejects_invalid_header_values() {
+        let mut value = request("https://example.com");
+        value.headers = vec![HeaderRow::enabled("X-Test", "bad\0value")];
+        assert_eq!(
+            value.validated().unwrap_err(),
+            ValidationError::InvalidHeaderValue { row: 1 }
+        );
     }
 
     #[test]
     fn validates_any_nonempty_json_value() {
         for json in ["null", "42", "[]", "{\"ok\":true}"] {
-            let mut value = draft("https://example.com");
+            let mut value = request("https://example.com");
             value.body = RequestBody::Json(json.to_owned());
-            RequestSnapshot::try_from(value).unwrap();
+            value.validated().unwrap();
         }
     }
 
     #[test]
     fn reports_json_error_location() {
-        let mut value = draft("https://example.com");
+        let mut value = request("https://example.com");
         value.body = RequestBody::Json("{\n  nope\n}".to_owned());
-        let error = RequestSnapshot::try_from(value).unwrap_err();
+        let error = value.validated().unwrap_err();
         assert!(matches!(
             error,
             ValidationError::InvalidJson { line: 2, .. }
@@ -448,7 +458,7 @@ mod tests {
     #[test]
     fn validates_and_filters_multipart_fields() {
         let path = temporary_file(b"file bytes");
-        let mut value = draft("https://example.com/upload");
+        let mut value = request("https://example.com/upload");
         value.body = RequestBody::Multipart(vec![
             MultipartField::text("tag", "one"),
             MultipartField {
@@ -461,8 +471,8 @@ mod tests {
             MultipartField::text("", ""),
         ]);
 
-        let snapshot = RequestSnapshot::try_from(value).unwrap();
-        let RequestBody::Multipart(fields) = snapshot.body else {
+        let request = value.validated().unwrap();
+        let RequestBody::Multipart(fields) = request.body else {
             panic!("expected multipart body");
         };
         assert_eq!(fields.len(), 3);
@@ -474,32 +484,32 @@ mod tests {
 
     #[test]
     fn rejects_manual_multipart_content_type() {
-        let mut value = draft("https://example.com/upload");
+        let mut value = request("https://example.com/upload");
         value.headers = vec![HeaderRow::enabled("Content-Type", "multipart/form-data")];
         value.body = RequestBody::Multipart(vec![MultipartField::text("name", "Pakpos")]);
 
         assert_eq!(
-            RequestSnapshot::try_from(value).unwrap_err(),
+            value.validated().unwrap_err(),
             ValidationError::MultipartContentType
         );
     }
 
     #[test]
     fn rejects_missing_or_unreadable_multipart_files() {
-        let mut missing = draft("https://example.com/upload");
+        let mut missing = request("https://example.com/upload");
         missing.body = RequestBody::Multipart(vec![MultipartField::file("asset", "")]);
         assert!(matches!(
-            RequestSnapshot::try_from(missing).unwrap_err(),
+            missing.validated().unwrap_err(),
             ValidationError::MissingMultipartFile { row: 1 }
         ));
 
-        let mut unreadable = draft("https://example.com/upload");
+        let mut unreadable = request("https://example.com/upload");
         unreadable.body = RequestBody::Multipart(vec![MultipartField::file(
             "asset",
             "/missing/pakpos-test-file",
         )]);
         assert!(matches!(
-            RequestSnapshot::try_from(unreadable).unwrap_err(),
+            unreadable.validated().unwrap_err(),
             ValidationError::UnreadableMultipartFile { row: 1, .. }
         ));
     }

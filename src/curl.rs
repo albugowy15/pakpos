@@ -1,13 +1,10 @@
 use std::fmt;
 
-use crate::models::{
-    HeaderRow, HttpMethod, MultipartField, MultipartValue, RequestBody, RequestDraft,
-    RequestSnapshot,
-};
+use crate::models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurlImport {
-    pub request: RequestDraft,
+    pub request: Request,
     pub warnings: Vec<String>,
 }
 
@@ -28,19 +25,19 @@ impl fmt::Display for CurlError {
 
 impl std::error::Error for CurlError {}
 
-pub fn to_command(draft: RequestDraft) -> Result<String, CurlError> {
-    let entered_url = draft.url.trim().to_owned();
-    let snapshot =
-        RequestSnapshot::try_from(draft).map_err(|error| CurlError::new(error.to_string()))?;
+pub fn to_command(request: Request) -> Result<String, CurlError> {
+    let request = request
+        .validated()
+        .map_err(|error| CurlError::new(error.to_string()))?;
     let mut arguments = vec![
         "curl".to_owned(),
         "--request".to_owned(),
-        snapshot.method.as_str().to_owned(),
+        request.method.as_str().to_owned(),
         "--url".to_owned(),
-        shell_quote(&entered_url),
+        shell_quote(&request.url),
     ];
 
-    for header in snapshot.headers {
+    for header in request.headers {
         arguments.push("--header".to_owned());
         let value = if header.value.is_empty() {
             format!("{};", header.name)
@@ -50,7 +47,7 @@ pub fn to_command(draft: RequestDraft) -> Result<String, CurlError> {
         arguments.push(shell_quote(&value));
     }
 
-    match snapshot.body {
+    match request.body {
         RequestBody::None => {}
         RequestBody::Json(body) => {
             arguments.push("--data-raw".to_owned());
@@ -236,13 +233,15 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
     } else {
         HttpMethod::Get
     };
-    let request = RequestDraft {
+    let request = Request {
         method: method.unwrap_or(inferred_method),
         url,
         headers,
         body,
     };
-    RequestSnapshot::try_from_import(request.clone())
+    request
+        .clone()
+        .validated_for_import()
         .map_err(|error| CurlError::new(error.to_string()))?;
 
     Ok(CurlImport { request, warnings })
@@ -501,7 +500,7 @@ mod tests {
 
     #[test]
     fn round_trips_quotes_newlines_and_duplicate_headers() {
-        let request = RequestDraft {
+        let request = Request {
             method: HttpMethod::Put,
             url: "https://example.com/people?name=O'Reilly".to_owned(),
             headers: vec![
@@ -547,7 +546,7 @@ mod tests {
 
     #[test]
     fn exports_empty_header_with_curl_empty_value_syntax() {
-        let request = RequestDraft {
+        let request = Request {
             method: HttpMethod::Get,
             url: "https://example.com".to_owned(),
             headers: vec![HeaderRow::enabled("X-Empty", "")],
@@ -562,7 +561,7 @@ mod tests {
     #[test]
     fn round_trips_multipart_text_and_file_fields() {
         let file_path = std::env::current_dir().unwrap().join("Cargo.toml");
-        let request = RequestDraft {
+        let request = Request {
             method: HttpMethod::Patch,
             url: "https://example.com/upload".to_owned(),
             headers: Vec::new(),
@@ -592,7 +591,7 @@ mod tests {
             RequestBody::Multipart(vec![MultipartField::file("asset", unavailable)])
         );
         assert!(matches!(
-            RequestSnapshot::try_from(imported.request).unwrap_err(),
+            imported.request.validated().unwrap_err(),
             crate::models::ValidationError::UnreadableMultipartFile { row: 1, .. }
         ));
     }
@@ -602,7 +601,7 @@ mod tests {
         let file_path =
             std::env::temp_dir().join(format!("pakpos-curl;review-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&file_path, b"review fixture").unwrap();
-        let request = RequestDraft {
+        let request = Request {
             method: HttpMethod::Post,
             url: "https://example.com/upload".to_owned(),
             headers: Vec::new(),

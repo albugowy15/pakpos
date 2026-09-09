@@ -4,8 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Documentation
+
+- Specify embedded SQLite as the native collection store and Postman v2.1 JSON as
+  an explicit import/export format.
+
 ### Features
 
+- Add embedded SQLite collection storage with transactional incremental saves,
+  schema migration, lazy request loading, and Linux user-data permissions.
+- Add a GTK collection picker and creation dialog, request-name search, and contextual
+  request actions for creating, renaming, duplicating, deleting, and copying as cURL.
+- Autosave collection request edits and contextual mutations; remove the explicit
+  collection Save action and dirty-change prompts.
+- Consolidate editable, persisted, and send-time request data into one `Request`
+  model, validated once at the network boundary before execution.
 - Classify JSON, text, HTML, attachment, binary, and missing-content-type responses.
 - Decode common declared text charsets and expose raw JSON alongside formatted JSON.
 - Stream binary and oversized text responses into safe, collision-free Downloads files.

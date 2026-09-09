@@ -22,24 +22,31 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 - Paste a supported cURL command to populate the method, URL, repeated headers, inline
   JSON body, and multipart text/file fields. Pasted commands are parsed as data and
   are never executed through a shell.
+- Create, select, automatically save, and reopen local collections in embedded SQLite storage.
+- Search the active collection by request name and use request context menus to
+  create, rename, duplicate, delete, or copy a request as cURL. Request details are
+  loaded from storage only when selected.
 
 Pakpos verifies HTTPS certificates, does not follow redirects automatically, and does
 not retry requests.
 
 ## Status
 
-Pakpos is under active development. The current build is a usable scratch-request client; collections and persistence are not available yet.
+Pakpos is under active development. The current build supports scratch requests and
+the first native collection persistence slice. Nested folder editing and Postman
+collection import/export are not available yet.
 
-| Area                                                          | Progress                                                |
-| ------------------------------------------------------------- | ------------------------------------------------------- |
-| Native GTK request editor and HTTP execution                  | Available                                               |
-| Headers, JSON bodies, cancellation, and response inspection   | Available                                               |
-| Copy and paste cURL                                           | Available for supported headers, JSON, and multipart fields |
-| Multipart form-data and streamed file uploads                 | Available                                               |
-| Response classification, downloads, and charset handling      | Available                                               |
-| JSON editor indentation and bracket completion                | Planned                                                 |
-| Local collections and Postman Collection v2.1 import/export   | Planned                                                 |
-| Full memory, accessibility, and interoperability verification | In progress                                             |
+| Area                                                           | Progress                                                    |
+| -------------------------------------------------------------- | ----------------------------------------------------------- |
+| Native GTK request editor and HTTP execution                   | Available                                                   |
+| Headers, JSON bodies, cancellation, and response inspection    | Available                                                   |
+| Copy and paste cURL                                            | Available for supported headers, JSON, and multipart fields |
+| Multipart form-data and streamed file uploads                  | Available                                                   |
+| Response classification, downloads, and charset handling       | Available                                                   |
+| JSON editor indentation and bracket completion                 | Planned                                                     |
+| SQLite-backed local collection persistence                     | Available for flat request collections                      |
+| Nested folders and Postman v2.1 import/export                  | Planned                                                     |
+| Full memory, accessibility, and interoperability verification  | In progress                                                 |
 
 ## Build and run
 
@@ -74,3 +81,19 @@ cargo build --release
 
 The test suite includes request validation, cURL conversion, response formatting, and
 a local HTTP integration test.
+
+## Collection storage
+
+Pakpos keeps native collections in one embedded SQLite database under the
+Linux user-data directory. Collection and request records use stable IDs,
+and request details are loaded on demand so listing collections does not load
+every request body. Saving an edit updates only the affected records in a
+transaction rather than rewriting unrelated collections.
+
+Postman Collection v2.1 JSON will remain an explicit import/export format instead
+of Pakpos's native working format. Multipart uploads will continue to reference
+external files; Pakpos will not copy file contents or response bodies into the
+collection database.
+
+The layout and persistence contract are described in
+[`docs/storage.md`](docs/storage.md).
