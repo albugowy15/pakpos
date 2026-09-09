@@ -8,12 +8,13 @@ use reqwest::{
 };
 use tokio::sync::oneshot;
 
-use crate::models::{MultipartValue, REQUEST_TIMEOUT, RequestBody, RequestSnapshot};
+use crate::models::{MultipartValue, REQUEST_TIMEOUT, Request, RequestBody, ValidationError};
 use crate::response::{ResponseBodyCollector, system_download_directory};
 pub use crate::response::{ResponseData, ResponseHeader};
 
 #[derive(Debug)]
 pub enum RequestError {
+    Validation(ValidationError),
     Cancelled,
     Timeout,
     InvalidHeader { name: String, reason: String },
@@ -24,6 +25,7 @@ pub enum RequestError {
 impl fmt::Display for RequestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Validation(error) => error.fmt(formatter),
             Self::Cancelled => formatter.write_str("Request cancelled."),
             Self::Timeout => formatter.write_str("The request timed out after 30 seconds."),
             Self::InvalidHeader { name, reason } => {
@@ -46,40 +48,41 @@ impl fmt::Display for RequestError {
 impl std::error::Error for RequestError {}
 
 pub async fn execute(
-    snapshot: RequestSnapshot,
+    request: Request,
     cancel: oneshot::Receiver<()>,
 ) -> Result<ResponseData, RequestError> {
-    execute_with_download_directory(snapshot, cancel, system_download_directory()).await
+    execute_with_download_directory(request, cancel, system_download_directory()).await
 }
 
 pub async fn execute_with_download_directory(
-    snapshot: RequestSnapshot,
+    request: Request,
     cancel: oneshot::Receiver<()>,
     download_directory: Result<PathBuf, String>,
 ) -> Result<ResponseData, RequestError> {
     tokio::select! {
         _ = cancel => Err(RequestError::Cancelled),
-        result = tokio::time::timeout(REQUEST_TIMEOUT, execute_inner(snapshot, download_directory)) => {
+        result = tokio::time::timeout(REQUEST_TIMEOUT, execute_inner(request, download_directory)) => {
             result.map_err(|_| RequestError::Timeout)?
         }
     }
 }
 
 async fn execute_inner(
-    snapshot: RequestSnapshot,
+    request: Request,
     download_directory: Result<PathBuf, String>,
 ) -> Result<ResponseData, RequestError> {
+    let request = request.validated().map_err(RequestError::Validation)?;
     let client = Client::builder()
         .redirect(Policy::none())
         .build()
         .map_err(RequestError::Transport)?;
     let mut headers = HeaderMap::new();
-    let has_content_type = snapshot
+    let has_content_type = request
         .headers
         .iter()
         .any(|header| header.name.eq_ignore_ascii_case(CONTENT_TYPE.as_str()));
 
-    for header in snapshot.headers {
+    for header in request.headers {
         let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|error| {
             RequestError::InvalidHeader {
                 name: header.name.clone(),
@@ -94,16 +97,16 @@ async fn execute_inner(
         headers.append(name, value);
     }
 
-    let mut request = client
-        .request(snapshot.method.into(), snapshot.url)
+    let mut outbound = client
+        .request(request.method.into(), request.url)
         .headers(headers);
-    match snapshot.body {
+    match request.body {
         RequestBody::None => {}
         RequestBody::Json(body) => {
             if !has_content_type {
-                request = request.header(CONTENT_TYPE, "application/json");
+                outbound = outbound.header(CONTENT_TYPE, "application/json");
             }
-            request = request.body(body);
+            outbound = outbound.body(body);
         }
         RequestBody::Multipart(fields) => {
             let mut form = Form::new();
@@ -122,12 +125,12 @@ async fn execute_inner(
                     }
                 };
             }
-            request = request.multipart(form);
+            outbound = outbound.multipart(form);
         }
     }
 
     let started = Instant::now();
-    let mut response = request.send().await.map_err(RequestError::Transport)?;
+    let mut response = outbound.send().await.map_err(RequestError::Transport)?;
     let status = response.status();
     let response_headers = response
         .headers()
@@ -177,7 +180,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::models::{HeaderRow, HttpMethod, RequestBody, RequestDraft, RequestSnapshot};
+    use crate::models::{HeaderRow, HttpMethod, Request, RequestBody};
     use crate::response::{ResponseBody, ResponseTextKind};
 
     fn response(preview: Vec<u8>, content_type: Option<&str>) -> ResponseData {
@@ -228,6 +231,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validates_the_request_at_the_execution_boundary() {
+        let (_cancel_sender, cancel_receiver) = oneshot::channel();
+        let error = execute(Request::default(), cancel_receiver)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RequestError::Validation(ValidationError::MissingUrl)
+        ));
+    }
+
+    #[tokio::test]
     async fn sends_json_and_preserves_duplicate_headers() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -257,7 +272,7 @@ mod tests {
                 .unwrap();
         });
 
-        let draft = RequestDraft {
+        let request = Request {
             method: HttpMethod::Post,
             url: format!("http://{address}/items?b=2&a=1"),
             headers: vec![
@@ -266,9 +281,8 @@ mod tests {
             ],
             body: RequestBody::Json("{\"sent\":true}".to_owned()),
         };
-        let snapshot = RequestSnapshot::try_from(draft).unwrap();
         let (_cancel_sender, cancel_receiver) = oneshot::channel();
-        let response = execute(snapshot, cancel_receiver).await.unwrap();
+        let response = execute(request, cancel_receiver).await.unwrap();
         let request = String::from_utf8(request_receiver.recv().unwrap()).unwrap();
         server.join().unwrap();
 
@@ -337,7 +351,7 @@ mod tests {
                 .unwrap();
         });
 
-        let draft = RequestDraft {
+        let request = Request {
             method: HttpMethod::Post,
             url: format!("http://{address}/upload"),
             headers: Vec::new(),
@@ -347,9 +361,8 @@ mod tests {
                 crate::models::MultipartField::file("asset", &file_path),
             ]),
         };
-        let snapshot = RequestSnapshot::try_from(draft).unwrap();
         let (_cancel_sender, cancel_receiver) = oneshot::channel();
-        let response = execute(snapshot, cancel_receiver).await.unwrap();
+        let response = execute(request, cancel_receiver).await.unwrap();
         let request = String::from_utf8(request_receiver.recv().unwrap()).unwrap();
         server.join().unwrap();
         std::fs::remove_file(file_path).unwrap();
@@ -396,14 +409,13 @@ mod tests {
             stream.write_all(response_bytes).unwrap();
         });
 
-        let snapshot = RequestSnapshot::try_from(RequestDraft {
+        let request = Request {
             url: format!("http://{address}/download"),
-            ..RequestDraft::default()
-        })
-        .unwrap();
+            ..Request::default()
+        };
         let (_cancel_sender, cancel_receiver) = oneshot::channel();
         let response = execute_with_download_directory(
-            snapshot,
+            request,
             cancel_receiver,
             Ok(download_directory.clone()),
         )

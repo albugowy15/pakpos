@@ -1,6 +1,7 @@
 # Pakpos product specification
 
-Status: Approved for implementation on 2026-09-07. Implementation is underway.
+Status: Approved for implementation on 2026-09-07. The native SQLite storage
+direction was approved on 2026-09-09. Implementation is underway.
 
 ## Purpose
 
@@ -25,6 +26,9 @@ it does not require invoking the curl executable.
 - Use Rust, edition 2024, and continue the existing Cargo project.
 - Use GTK4 through gtk-rs for the desktop UI. GTK supersedes the older Iced guidance
   in the repository instructions. Do not introduce Iced or a web-based UI.
+- Use embedded SQLite as Pakpos's native collection store. SQLite runs in-process;
+  do not introduce a database server or one file per request. Postman JSON is an
+  interchange format, not Pakpos's working storage format.
 - Run as a native Linux desktop application. Do not embed Electron, Chromium, a
   WebView, or a browser-based editor, including for JSON editing or HTML responses.
 - Use native GTK styling, including the user's theme. Do not override colors or
@@ -32,8 +36,8 @@ it does not require invoking the curl executable.
 - The inspected project contains a minimal `src/main.rs` and dependencies on serde,
   serde_json, and uuid. Inspect the actual tree again before implementation and
   preserve unrelated user changes; do not reconstruct removed code automatically.
-- Primary product and validation target: Linux desktop. Keep file paths and OS directory lookup
-  portable; Windows/macOS packaging is outside the initial release.
+- Pakpos supports Linux desktop only. Follow Linux and XDG conventions directly;
+  do not add Windows or macOS compatibility branches or packaging.
 
 The concrete defaults below resolve unspecified behavior for the initial implementation.
 They can be changed through owner review; agents should otherwise implement them consistently.
@@ -74,7 +78,9 @@ Implementation constraints:
 - Keep JSON indentation and bracket completion local to the native editor; do not
   introduce a language server or browser runtime for these conveniences.
 - Avoid unbounded caches, background services, and duplicate collection models.
-  Preserve required Postman fields without retaining unnecessary full-document copies.
+  Load collection and tree metadata without eagerly loading every request body.
+  Load the active request on demand, and retain unsupported imported Postman data
+  without keeping an unnecessary duplicate of the full imported document.
 - Verify repeated use: run 100 sequential requests returning a 1 MiB body, replacing
   the response each time. Compare settled memory after the first 10 requests and
   after the final request; investigate growth above 20 MiB and any continuing upward
@@ -93,7 +99,7 @@ owner review; do not silently weaken limits or remove required features to meet 
 | Request body | None, JSON, and multipart/form-data with text and file fields |
 | Responses | Status, elapsed time, received body size, headers, and readable body |
 | Response formats | JSON, plain text, HTML source, and automatic file downloads |
-| Collections | Create, name, organize saved requests, save locally, and reopen |
+| Collections | Create, name, organize, autosave locally, and reopen saved requests |
 | Interoperability | Import and export Postman Collection v2.1 JSON; copy and paste cURL commands |
 
 Out of scope: Pakpos accounts, sign-in, cloud storage, synchronization, real-time
@@ -114,7 +120,8 @@ cookie jar or automatic authentication workflow in the initial release.
 3. Edit headers and optionally choose a body mode.
 4. Select Send. Display an in-progress state and provide Cancel.
 5. Show the response or an actionable error. Allow editing and sending again.
-6. Save the request to a collection when desired. Sending does not require saving.
+6. When editing a request in a collection, persist changes automatically. Sending a
+   scratch request does not require creating a collection.
 
 ### cURL sharing
 
@@ -141,8 +148,9 @@ disclose ignored redirect behavior because Pakpos does not follow redirects.
   missing names or embedded newlines, before sending. Empty values are allowed.
 - Send only enabled headers. Treat names case-insensitively when checking conflicts.
 - Do not hide or replace manually supplied authorization values.
-- Capture an immutable request snapshot on Send. Later edits must not change an
-  in-flight request. Permit one in-flight request in the window for the initial release.
+- Move a copy of the current `Request` into the Send worker. Later edits must not
+  change an in-flight request. Permit one in-flight request in the window for the
+  initial release.
 - Default to a 30-second total timeout, including response transfer. Cancellation
   and timeout must stop ongoing work and leave the editor usable.
 - Verify HTTPS certificates. Do not include a TLS verification bypass in this release.
@@ -198,7 +206,7 @@ MIME type when known, otherwise `application/octet-stream`.
 Body selection is independent of method; do not silently discard a configured body.
 Changing modes must retain edits during the current editing session, but only the
 selected mode is sent and saved. Multipart file contents are read when sending and
-are never embedded in collection files.
+are never embedded in the collection database or Postman exports.
 
 ## Response behavior
 
@@ -251,53 +259,99 @@ truncated JSON. Keep the UI responsive during large responses.
 
 A collection is a named, ordered group of saved requests. Support creating and
 renaming collections; adding, renaming, editing, duplicating, and removing requests;
-and opening previously saved collection files. Preserve imported nested folders and
-their order. A simple tree is sufficient; a folder-management suite is unnecessary.
+and reopening saved collections. Preserve imported nested folders and their order.
+A simple tree is sufficient; a folder-management suite is unnecessary.
 
-Use one local JSON file per collection. Use Postman Collection v2.1 as the on-disk
-format so saved files are portable and there is no competing native database format.
-The user chooses the location on first Save; subsequent saves update that file.
-Use `.postman_collection.json` as the suggested filename suffix. Collection names
-need not be globally unique; do not use display names as identifiers.
+Use one application-managed embedded SQLite database as Pakpos's native working
+store. Resolve it through the platform user-data directory; on Linux this is
+`$XDG_DATA_HOME/pakpos/pakpos.sqlite3` when `XDG_DATA_HOME` is an absolute path,
+otherwise `~/.local/share/pakpos/pakpos.sqlite3`. Create the parent directory when
+needed and restrict access to the current Linux user.
+Do not store each collection or request as a separate filesystem file, and do not
+scan a directory tree to reconstruct application state.
+
+Store collections, ordered folder/request nodes, request data, ordered headers, and
+ordered multipart fields as addressable records. Collections and nodes use stable,
+persisted identifiers such as UUIDs; display names need not be unique and must not
+serve as identifiers. The exact normalized schema is an implementation detail, but
+it must allow one request to be updated without serializing or rewriting unrelated
+collections or request bodies.
+
+Version the native schema and apply migrations transactionally before normal use.
+A failed migration, unreadable database, or integrity error must be reported without
+deleting, recreating, or silently replacing the user's database. Use SQLite
+transactions and durability guarantees for multi-record changes. Do not add an
+external database service, implicit cloud backup, or synchronization.
 
 Define the actions consistently:
 
-- **New collection:** Create an unsaved collection in memory.
-- **Save:** Serialize the current collection to its associated path, prompting for a
-  path on first save. Include current request edits.
-- **Open collection:** Open a local collection file for editing; subsequent Save
-  writes back to that path.
-- **Import Postman collection:** Read a file into a new unsaved collection. Never
-  modify the source file as a consequence of importing it.
+- **New collection:** Open a modal containing a required collection-name input and
+  a Create Collection button that remains disabled while the trimmed name is empty.
+  A successful confirmation creates the collection in the native database and makes
+  it the active collection immediately.
+- **Open collection:** Select a saved collection from the sidebar collection
+  dropdown. Do not interpret this action as opening a Postman JSON file.
+- **Import Postman collection:** Parse and validate an external v2.1 JSON file, then
+  commit it atomically as a new native collection. Never modify the source file as a
+  consequence of importing it.
 - **Export Postman collection:** Write a snapshot, including current edits, to a
-  chosen destination. Keep the current collection's associated path and dirty state.
+  user-chosen `.postman_collection.json` destination. Export does not change the
+  native collection's identity or autosave state.
 
 Support one open collection and one active request editor at a time. Request edits
-update the in-memory collection and mark it dirty. Switching requests preserves
-those edits. Before closing, replacing a dirty collection, or discarding an unsaved
-scratch request, offer Save, Discard, and Cancel. Confirm removal of a saved request.
-No autosave or recent-file system is required for the initial release.
+update the in-memory collection and autosave without a timer-based debounce. Persist
+free-text edits when their input loses focus. Persist discrete changes immediately,
+including method/body-mode selection, enabled-state toggles, row addition/removal,
+file selection, creating, duplicating, renaming, and confirming deletion of a request.
+Before switching collections or closing, flush pending collection changes without a
+manual confirmation prompt. Confirm deletion of a request. No recent-file system is required.
 
 Persist request names, methods, URLs, ordered headers and enabled states, selected
 body mode, JSON text, multipart fields/types/enabled states, and file references.
-Do not persist response bodies or download contents. Preserve relative imported
-file references and resolve them against the source collection directory; if a save
-or export relocates the collection, adjust references to keep targeting the same
-files. Explain that file references are not portable attachments and allow users to
+Do not persist response bodies or download contents. On Postman import, resolve a
+relative multipart file reference against the imported file's directory and retain
+enough source context to target the same file later. On export to another directory,
+rebase file references when possible so they continue to identify the same files.
+File references are not portable attachments; explain this and allow users to
 reselect missing files before sending.
 
-Use atomic replacement for saves so a failed write does not destroy the last saved
-collection. Confirm replacement of a separately selected existing destination.
-Report malformed JSON, unsupported versions, invalid structure, and permissions
-errors without replacing the current in-memory collection or corrupting files.
-Collection files contain plaintext request values, including manually entered
-secrets; mention this briefly in collection save/export help. Do not log secrets.
+Autosave only records changed by the operation and commit all related changes together.
+A failed autosave must leave the last committed collection intact, keep current edits
+in memory, report the error, and retry after a later edit or explicit transition.
+Confirm before overwriting a separately selected Postman export
+destination. Report malformed imports, unsupported versions, invalid structure,
+database failures, migration failures, and permissions errors without replacing
+current in-memory work or corrupting committed data.
+
+The SQLite database and Postman exports contain plaintext request values, including
+manually entered secrets. Mention this briefly in collection persistence and export
+help, restrict native storage permissions where possible, and never log those values.
+
+### Storage performance requirements
+
+- Listing collections reads collection metadata only. It must not deserialize all
+  request headers, bodies, multipart fields, or preserved Postman data.
+- Opening a collection loads the ordered folder/request tree needed by the sidebar,
+  but request details are loaded on selection. Keep only the open collection's
+  necessary metadata and active editing state in memory.
+- Saving an edited request updates that request and its dependent ordered rows in a
+  transaction; it must not rewrite unrelated requests or collections.
+- Index the relationships and ordering fields used to list collections, build a
+  collection tree, and fetch an active request. Avoid unbounded application caches;
+  rely on bounded SQLite behavior and measured queries.
+- Keep database work off the GTK main thread. A large collection, import, export,
+  migration, or durability sync must not freeze the interface.
+- Add storage benchmarks or instrumentation for listing 100 collections, opening a
+  1,000-request collection, selecting requests, and saving one edited request. Record
+  timings and peak memory on the documented reference environment before release;
+  investigate query-count or memory growth that scales with unrelated request bodies.
 
 ## Postman interoperability contract
 
-Target **Postman Collection v2.1.0**, using its published schema as the serialization
-contract. Set `info.name` and `info.schema`, and serialize requests/folders under
-`item`. See the [official v2.1 schema documentation](https://schema.postman.com/json/collection/v2.1.0/docs/index.html).
+Target **Postman Collection v2.1.0** for import and export, using its published
+schema as the interchange contract. It is not the native database schema. Exports
+set `info.name` and `info.schema`, and serialize requests/folders under `item`. See
+the [official v2.1 schema documentation](https://schema.postman.com/json/collection/v2.1.0/docs/index.html).
 
 The supported mapping includes request names, folder nesting, the six methods,
 URLs represented as strings or structured objects, headers and disabled flags,
@@ -308,24 +362,38 @@ Normalize structured URLs without dropping query entries or changing escaping.
 
 Compatibility is for the supported request subset, not the entire Postman runtime.
 Imports may include authentication configuration, scripts, variables, unsupported
-methods, or other body modes. Preserve unsupported JSON fields in the saved/exported
-document where untouched, and show a concise import summary of unsupported behavior.
+methods, or other body modes. Store unsupported JSON fields as opaque native records
+associated with the relevant collection, folder, request, or body so a later export
+can merge them back where untouched. Do not retain a redundant full-document copy.
+Show a concise import summary of unsupported behavior.
 Do not execute scripts or resolve variables. Block sending an affected request when
 it depends on unsupported settings, including inherited collection/folder auth or
 unresolved `{{variables}}`; identify what must be replaced with supported literal
 values, headers, or body settings. A user must explicitly remove/replace unsupported
 behavior rather than having Pakpos silently reinterpret it.
 
-Parse imports fully before changing application state. Reject other collection
-versions with a message asking the user to export v2.1. Do not claim compatibility
-with every Postman feature or silently discard unsupported fields on export.
+Parse and validate imports fully before changing application state, then apply
+native persistence in one transaction before activating the imported collection.
+Reject other collection
+versions with a message asking the user to export v2.1. A failed import must neither
+change the open collection nor partially populate the database. Do not claim
+compatibility with every Postman feature or silently discard unsupported fields on
+export.
 
 ## Minimal interface
 
 - A native window with a compact collection sidebar and main request/response area.
-- A header/menu for New collection, Open, Save, Import, and Export. Attach cURL
+- The sidebar starts with a dropdown of saved collections and an adjacent `+` button
+  that opens the New collection modal. Do not show a persistent collection-name
+  input. Import Postman and Export Postman may remain in the header menu. Attach cURL
   copy/paste actions to the Send control as a compact drop-down menu.
-- Sidebar: collection name, request/folder tree, and small request-management actions.
+- Place a request-name search input above the request tree. Apply its filter only
+  when the user presses Enter or the input loses focus; do not add a submit button.
+- Do not show persistent Add, Duplicate, Remove, or request-name input controls.
+  Right-clicking empty request-list space offers **New HTTP Request**, creating a
+  request named `HTTP Request` with method GET. Right-clicking a request offers
+  **Duplicate**, **Delete**, **Rename**, and **Copy as Curl**. Delete requires
+  confirmation, and Rename uses a focused dialog rather than a persistent input.
 - Request area: method selector, URL entry, and Send/Cancel control on one row;
   Headers and Body sections below. Body mode controls expose only relevant inputs.
 - Response area: status/time/size summary, Body and Headers views, loading/empty/error
@@ -335,22 +403,22 @@ with every Postman feature or silently discard unsupported fields on export.
 - Use standard GTK widgets, labels, focus behavior, file dialogs, and system theme.
   Monospace text is appropriate for URLs, bodies, and header values.
 - Ensure keyboard access, accessible control labels, visible focus, and messages
-  that do not rely on color alone. Support Ctrl+Enter to send, Ctrl+S to save,
-  and Ctrl+O to open when no modal dialog is active.
+  that do not rely on color alone. Support Ctrl+Enter to send and Ctrl+O to focus the
+  native collection dropdown when no modal dialog is active.
 
 ## Guidance for implementation agents
 
 After product approval, inspect the repository and implement in small coherent steps.
 Separate request/collection models, HTTP execution, response classification and
-downloads, collection serialization/storage, and GTK UI. Keep model and conversion
-logic testable without a display server. Prefer a mature Rust HTTP client supporting
-TLS, multipart, streaming, timeouts, and cancellation; use direct APIs rather than
-building shell command strings. Select dependencies deliberately and record native
-GTK build prerequisites in the implementation README.
+downloads, native SQLite persistence, Postman conversion, and GTK UI. Keep models,
+database migrations, persistence operations, and conversion logic testable without
+a display server. Prefer mature, focused Rust libraries for HTTP and embedded SQLite;
+use direct APIs rather than building shell command strings. Select dependencies
+deliberately and record native build prerequisites in the implementation README.
 
-Keep network and disk work off the GTK main thread. Update widgets on that thread
-and associate results with their originating request so stale results cannot replace
-another request's response. Follow gtk-rs guidance on the
+Keep network and SQLite/file work off the GTK main thread. Update widgets on that
+thread and associate results with their originating request so stale results cannot
+replace another request's response. Follow gtk-rs guidance on the
 [main event loop](https://gtk-rs.org/gtk4-rs/stable/latest/book/main_event_loop.html).
 Avoid panics for user input, HTTP failures, and filesystem failures.
 
@@ -359,7 +427,7 @@ Suggested sequence:
 1. GTK shell, models, method/URL editor, and basic request/response flow.
 2. Header and body editing, multipart upload, cancellation, and error states.
 3. Response classification, bounded previews, and automatic downloads.
-4. Collection editing, local saves/opens, and Postman import/export.
+4. Collection editing, native SQLite persistence, and Postman import/export.
 5. Interoperability fixtures, integration checks, memory profiling against the budgets,
    accessibility pass, and build docs. Measure memory from the first working GTK shell
    onward so regressions are caught while each feature is introduced.
@@ -388,22 +456,30 @@ The initial release is complete when the following are demonstrated:
   bytes, resist path traversal, avoid collisions, and clean up partial transfers.
 - The UI stays responsive during a slow request or large transfer. Cancel and timeout
   work, and failures do not erase request edits or misattribute response results.
-- A collection saved and reopened after application restart retains supported data.
-  Save/Discard/Cancel and failed saves behave as specified.
+- Multiple collections saved into native SQLite storage and reopened after an
+  application restart retain their identities, ordering, folder trees, and supported
+  request data. Autosaving one edited request does not rewrite unrelated request bodies.
+- Autosave and failed database writes behave as specified. Transaction
+  rollback, a failed schema migration, and an unreadable/corrupt database do not
+  silently erase or replace previously committed data.
 - A representative Postman v2.1 fixture imports with nested folders, structured URLs,
   disabled headers, JSON, and multipart files. Supported values survive a round trip.
 - Exports validate against the v2.1 schema and can actually be imported into Postman;
   representative supported requests behave equivalently against a local test server.
 - Unsupported imported features are preserved and disclosed, and affected requests
   cannot be sent silently with altered semantics. Invalid imports preserve current work.
+- Collection listing and request selection follow the lazy-loading and storage
+  performance requirements without blocking the GTK main thread.
 - Native GTK light/dark appearance and keyboard navigation remain usable without
   custom color styling.
 - Release-build memory measurements meet the documented idle, everyday-use, and
   large-transfer budgets. Repeated requests demonstrate stable memory reuse without
   accumulating responses or tasks. Record results and investigate regressions.
 
-Use focused unit tests for models, conversion, classification, and filename handling;
-use a local HTTP server for integration tests without depending on public APIs.
+Use focused unit tests for models, database migrations and transactions, Postman
+conversion, classification, and filename handling; use a temporary SQLite database
+for persistence tests and a local HTTP server for integration tests without depending
+on public APIs.
 Run `cargo fmt -- --check`, `cargo clippy -- -D warnings`, and `cargo test` once code
 exists. Include manual GTK and actual Postman import checks; schema validation alone
 does not prove interoperability. Report any unverified acceptance criteria explicitly.
