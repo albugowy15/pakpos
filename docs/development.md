@@ -3,6 +3,9 @@
 Pakpos is a native Rust and GTK4 application for Linux. The initial implementation
 targets GTK 4.10 or newer and uses the system theme.
 
+The source dependency boundaries and rules for application actions, effects, GTK,
+and runtime adapters are documented in [`architecture.md`](architecture.md).
+
 On Debian or Ubuntu, install the native build tools before building:
 
 ```sh
