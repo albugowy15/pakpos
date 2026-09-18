@@ -97,3 +97,6 @@ collection database.
 
 The layout and persistence contract are described in
 [`docs/storage.md`](docs/storage.md).
+
+The application/UI/runtime dependency boundaries are described in
+[`docs/architecture.md`](docs/architecture.md).
