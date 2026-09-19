@@ -11,7 +11,8 @@ use uuid::Uuid;
 use super::dialogs::show_create_collection_dialog;
 use super::editor::{EditorWidgets, apply_request, collect_request, request_autosave};
 use super::sidebar::{
-    render_request_buttons, sync_active_request_row, sync_collection_picker, sync_request_method,
+    refresh_collection_choices, render_request_buttons, sync_active_request_row,
+    sync_collection_picker, sync_request_method,
 };
 use super::{RequestState, SidebarWidgets, show_error, show_message};
 
@@ -55,7 +56,111 @@ fn perform_deferred_action(
         DeferredAction::LoadCollection(collection) => {
             load_collection(collection, state, sidebar, editor, response_summary)
         }
+        DeferredAction::ImportPostman(source) => {
+            import_postman(source, state, sidebar, editor, response_summary)
+        }
+        DeferredAction::ExportPostman(destination) => {
+            export_postman(destination, state, response_summary)
+        }
     }
+}
+
+fn import_postman(
+    source: std::path::PathBuf,
+    state: &Rc<RequestState>,
+    sidebar: &SidebarWidgets,
+    editor: &EditorWidgets,
+    response_summary: &Label,
+) {
+    let update = state.update(Action::ImportPostman(source));
+    let Some(effect) = update.effect else {
+        return;
+    };
+    show_message(response_summary, "Importing Postman collection…");
+    state.effects.run(effect, {
+        let state = state.clone();
+        let sidebar = sidebar.clone();
+        let editor = editor.clone();
+        let response_summary = response_summary.clone();
+        move |output| {
+            let EffectOutput::PostmanImported(result) = output else {
+                return;
+            };
+            state.update(Action::CollectionOperationCompleted);
+            match result {
+                Ok(imported) => {
+                    let mut session =
+                        CollectionSession::from_requests(imported.collection, imported.nodes);
+                    let first_request = imported.first_request;
+                    let first_id = first_request.as_ref().map(|request| request.node.id);
+                    if let Some(request) = first_request {
+                        session.apply_loaded_request(request);
+                    }
+                    if let Some(request_id) = first_id {
+                        session.select_request(request_id);
+                    }
+                    state.update(Action::SetCollection(session));
+                    sidebar.search.set_text("");
+                    sidebar.applied_search.replace(String::new());
+                    render_request_buttons(&state, &sidebar, &editor);
+                    if let Some(request_id) = first_id {
+                        apply_loaded_request(request_id, &state, &sidebar, &editor);
+                        sync_active_request_row(&state, &sidebar, Some(request_id));
+                    } else {
+                        clear_request_editor(&sidebar, &editor);
+                    }
+                    refresh_collection_choices(&state, &sidebar, &editor, &response_summary);
+                    show_message(&response_summary, "Imported the Postman collection.");
+                }
+                Err(error) => show_error(&response_summary, &error),
+            }
+        }
+    });
+}
+
+fn export_postman(
+    destination: std::path::PathBuf,
+    state: &Rc<RequestState>,
+    response_summary: &Label,
+) {
+    let Some(collection_id) = state
+        .collection
+        .borrow()
+        .as_ref()
+        .map(|session| session.summary().id)
+    else {
+        show_error(response_summary, "Create or select a collection first.");
+        return;
+    };
+    let update = state.update(Action::ExportPostman {
+        collection_id,
+        destination,
+    });
+    let Some(effect) = update.effect else {
+        return;
+    };
+    show_message(response_summary, "Exporting Postman collection…");
+    state.effects.run(effect, {
+        let state = state.clone();
+        let response_summary = response_summary.clone();
+        move |output| {
+            let EffectOutput::PostmanExported {
+                destination,
+                result,
+            } = output
+            else {
+                return;
+            };
+            state.update(Action::CollectionOperationCompleted);
+            match result {
+                Ok(()) => show_message(
+                    &response_summary,
+                    &format!("Exported Postman collection to {}.", destination.display()),
+                ),
+                Err(error) => show_error(&response_summary, &error),
+            }
+        }
+    });
 }
 
 pub(super) fn pending_collection_save(state: &Rc<RequestState>) -> Option<CollectionChanges> {

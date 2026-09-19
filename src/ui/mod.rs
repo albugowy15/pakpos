@@ -6,12 +6,12 @@ use std::{
 };
 
 use gtk::{
-    Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry, HeaderBar, Label,
-    ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, ScrolledWindow, TextView, gio,
-    glib, prelude::*,
+    Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry, FileDialog, HeaderBar,
+    Label, ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, ScrolledWindow, TextView,
+    gio, glib, prelude::*,
 };
 use pakpos::{
-    app::{Action, AppEvent, AppState, EffectOutput},
+    app::{Action, AppEvent, AppState, DeferredAction, EffectOutput},
     collections::CollectionSummary,
     models::HttpMethod,
     net::ResponseData,
@@ -43,7 +43,6 @@ struct SidebarWidgetHandles {
     root: GtkBox,
     collection_picker: DropDown,
     collection_choices: Rc<RefCell<Vec<CollectionSummary>>>,
-    new_collection: Button,
     new_request: Button,
     search: Entry,
     applied_search: Rc<RefCell<String>>,
@@ -72,6 +71,7 @@ impl Deref for RequestState {
 }
 
 pub fn build(application: &Application) {
+    sourceview5::init();
     let autosave = AutosaveTrigger::default();
     let window = ApplicationWindow::builder()
         .application(application)
@@ -90,8 +90,23 @@ pub fn build(application: &Application) {
         .resize_start_child(false)
         .build();
     let sidebar = build_sidebar(autosave.clone());
-    header_bar.pack_start(&sidebar.collection_picker);
-    header_bar.pack_start(&sidebar.new_collection);
+    let collection_actions = gio::Menu::new();
+    collection_actions.append(Some("New Collection…"), Some("win.new-collection"));
+    collection_actions.append(
+        Some("Import Postman Collection…"),
+        Some("win.import-postman"),
+    );
+    collection_actions.append(
+        Some("Export Postman Collection…"),
+        Some("win.export-postman"),
+    );
+    let collection_menu = MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .menu_model(&collection_actions)
+        .tooltip_text("Collection actions")
+        .build();
+    header_bar.pack_start(&collection_menu);
+    header_bar.set_title_widget(Some(&sidebar.collection_picker));
     root.set_start_child(Some(&sidebar.root));
 
     let main = Paned::builder()
@@ -164,6 +179,14 @@ pub fn build(application: &Application) {
     let (body_page, body) = build_body_page(&window, &autosave);
     request_notebook.append_page(&body_page, Some(&Label::new(Some("Body"))));
     request_panel.append(&request_notebook);
+    main.connect_position_notify({
+        let json_editor = body.json_editor.downgrade();
+        move |_| {
+            if let Some(json_editor) = json_editor.upgrade() {
+                json_editor.queue_draw();
+            }
+        }
+    });
 
     let response_notebook = Notebook::new();
     response_notebook.set_vexpand(true);
@@ -201,6 +224,7 @@ pub fn build(application: &Application) {
         &state,
         &sidebar.status,
     );
+    setup_postman_actions(&window, &sidebar, &editor_widgets, &state);
     let send_request: Rc<dyn Fn()> = Rc::new({
         let method = method.clone();
         let url = url.clone();
@@ -398,6 +422,121 @@ pub fn build(application: &Application) {
 
     window.present();
     url.grab_focus();
+}
+
+fn setup_postman_actions(
+    window: &ApplicationWindow,
+    sidebar: &SidebarWidgets,
+    editor: &Rc<editor::EditorWidgetHandles>,
+    state: &Rc<RequestState>,
+) {
+    let import_action = gio::SimpleAction::new("import-postman", None);
+    import_action.connect_activate({
+        let window = window.downgrade();
+        let state = state.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
+        move |_, _| {
+            let (Some(window), Some(sidebar), Some(editor)) =
+                (window.upgrade(), sidebar.upgrade(), editor.upgrade())
+            else {
+                return;
+            };
+            let dialog = FileDialog::builder()
+                .title("Import Postman Collection")
+                .accept_label("Import")
+                .modal(true)
+                .build();
+            dialog.open(Some(&window), None::<&gio::Cancellable>, {
+                let window = window.downgrade();
+                let state = state.clone();
+                let sidebar = Rc::downgrade(&sidebar);
+                let editor = Rc::downgrade(&editor);
+                move |result| {
+                    let (Ok(file), Some(window), Some(sidebar), Some(editor)) = (
+                        result,
+                        window.upgrade(),
+                        sidebar.upgrade(),
+                        editor.upgrade(),
+                    ) else {
+                        return;
+                    };
+                    let Some(path) = file.path() else {
+                        show_error(&sidebar.status, "Select a local Postman collection file.");
+                        return;
+                    };
+                    flow::continue_after_autosave(
+                        &window,
+                        &state,
+                        &sidebar,
+                        &editor,
+                        &sidebar.status,
+                        DeferredAction::ImportPostman(path),
+                    );
+                }
+            });
+        }
+    });
+    window.add_action(&import_action);
+
+    let export_action = gio::SimpleAction::new("export-postman", None);
+    export_action.connect_activate({
+        let window = window.downgrade();
+        let state = state.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
+        move |_, _| {
+            let (Some(window), Some(sidebar), Some(editor)) =
+                (window.upgrade(), sidebar.upgrade(), editor.upgrade())
+            else {
+                return;
+            };
+            let Some(collection_name) = state
+                .collection
+                .borrow()
+                .as_ref()
+                .map(|session| session.summary().name.replace(['/', '\\'], "-"))
+            else {
+                show_error(&sidebar.status, "Create or select a collection first.");
+                return;
+            };
+            let dialog = FileDialog::builder()
+                .title("Export Postman Collection")
+                .accept_label("Export")
+                .initial_name(format!("{collection_name}.postman_collection.json"))
+                .modal(true)
+                .build();
+            dialog.save(Some(&window), None::<&gio::Cancellable>, {
+                let window = window.downgrade();
+                let state = state.clone();
+                let sidebar = Rc::downgrade(&sidebar);
+                let editor = Rc::downgrade(&editor);
+                move |result| {
+                    let (Ok(file), Some(window), Some(sidebar), Some(editor)) = (
+                        result,
+                        window.upgrade(),
+                        sidebar.upgrade(),
+                        editor.upgrade(),
+                    ) else {
+                        return;
+                    };
+                    let Some(path) = file.path() else {
+                        show_error(&sidebar.status, "Select a local export destination.");
+                        return;
+                    };
+                    flow::continue_after_autosave(
+                        &window,
+                        &state,
+                        &sidebar,
+                        &editor,
+                        &sidebar.status,
+                        DeferredAction::ExportPostman(path),
+                    );
+                }
+            });
+        }
+    });
+    window.add_action(&export_action);
 }
 
 fn set_request_running(send_group: &GtkBox, cancel: &Button, running: bool) {

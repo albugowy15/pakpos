@@ -1,7 +1,22 @@
 use super::*;
-use editor::{EditorWidgetHandles, add_header_row, add_multipart_row};
+use editor::{EditorWidgetHandles, add_header_row, add_multipart_row, json_style_scheme_id};
 use pakpos::{app::CollectionSession, models::Request};
 use sidebar::{build_request_context_menu, render_request_buttons};
+use sourceview5::prelude::*;
+
+#[test]
+fn json_style_scheme_follows_the_gtk_theme() {
+    assert_eq!(json_style_scheme_id(false, Some("Adwaita")), "Adwaita");
+    assert_eq!(
+        json_style_scheme_id(false, Some("Adwaita-dark")),
+        "Adwaita-dark"
+    );
+    assert_eq!(
+        json_style_scheme_id(false, Some("Breeze_Darker")),
+        "Adwaita-dark"
+    );
+    assert_eq!(json_style_scheme_id(true, None), "Adwaita-dark");
+}
 
 /// Kept separate from the headless default suite. Run on a GTK display with:
 /// cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1
@@ -9,6 +24,7 @@ use sidebar::{build_request_context_menu, render_request_buttons};
 #[ignore = "requires a GTK display"]
 fn widget_lifetimes() {
     gtk::init().expect("GTK display required");
+    sourceview5::init();
     let window = ApplicationWindow::builder().build();
     let autosave = AutosaveTrigger::default();
     let sidebar = build_sidebar(autosave.clone());
@@ -21,6 +37,38 @@ fn widget_lifetimes() {
         header_rows,
         body,
     });
+    assert!(editor.body.json_editor.is_auto_indent());
+    assert!(editor.body.json_editor.is_indent_on_tab());
+    assert!(editor.body.json_editor.is_insert_spaces_instead_of_tabs());
+    assert!(editor.body.json_editor.is_smart_backspace());
+    assert!(!editor.body.json_editor.space_drawer().enables_matrix());
+    assert_eq!(editor.body.json_editor.indent_width(), 2);
+    assert_eq!(editor.body.json_editor.tab_width(), 2);
+    let source_buffer = editor
+        .body
+        .json_editor
+        .buffer()
+        .downcast::<sourceview5::Buffer>()
+        .expect("JSON editor should use a GtkSourceView buffer");
+    assert_eq!(
+        source_buffer
+            .language()
+            .as_ref()
+            .map(|language| language.id()),
+        Some("json".into())
+    );
+    let settings = gtk::Settings::default().expect("GTK settings should be available");
+    let expected_scheme = json_style_scheme_id(
+        settings.is_gtk_application_prefer_dark_theme(),
+        settings.gtk_theme_name().as_deref(),
+    );
+    assert_eq!(
+        source_buffer
+            .style_scheme()
+            .as_ref()
+            .map(|scheme| scheme.id()),
+        Some(expected_scheme.into())
+    );
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&sidebar.root);
     root.append(&editor.headers_box);

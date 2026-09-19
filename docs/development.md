@@ -9,7 +9,7 @@ and runtime adapters are documented in [`architecture.md`](architecture.md).
 On Debian or Ubuntu, install the native build tools before building:
 
 ```sh
-sudo apt install build-essential libgtk-4-dev pkg-config
+sudo apt install build-essential libgtk-4-dev libgtksourceview-5-dev pkg-config
 ```
 
 Then run:
@@ -34,30 +34,31 @@ Response handling classifies JSON, text, HTML source, attachments, and binary da
 Supported text charsets are decoded with visible replacement/unsupported-charset
 notices. Attachments, binary bodies, and text exceeding the 5 MiB preview limit are
 streamed through collision-safe partial files into the OS-configured Downloads
-directory. Flat SQLite collections and JSON editor assistance are implemented;
-Postman import/export remains planned in
-[`PRODUCT.md`](../PRODUCT.md#implementation-progress).
+directory. Flat SQLite collections, Postman v2.1 import/export, and JSON editor
+assistance are implemented.
 
-The JSON editor uses two-space indentation and completes `{}` and `[]` outside JSON
-strings. Enter retains indentation, expands empty pairs, and adds one level after an
-opening bracket. Typed generated closers are skipped, Backspace removes an untouched
-generated pair, and whitespace-only closing lines align with their matching opener.
-Tab and Shift+Tab indent or outdent the current line or selected lines. Assisted edits
-are grouped for native undo/redo; programmatic loads and cURL imports preserve their
+The JSON editor uses GtkSourceView for JSON syntax highlighting, bracket matching,
+two-space Tab/Shift+Tab indentation, smart backspace, and undo/redo. Pakpos completes
+`{}` and `[]` outside JSON strings. Enter retains indentation, expands empty pairs,
+and adds one level after an opening bracket. Typed generated closers are skipped,
+Backspace removes an untouched generated pair, and whitespace-only closing lines
+align with their matching opener. Programmatic loads and cURL imports preserve their
 source text and reset the undo baseline.
 
 The collection milestone uses one application-managed embedded SQLite
 database in the platform user-data directory. Native persistence and Postman v2.1
 conversion are separate layers: collection metadata and the selected request are
-loaded on demand from SQLite. Planned Postman conversion will read or write JSON
-only for explicit import and export. Database and file operations stay off the GTK
+loaded on demand from SQLite. Postman conversion reads or writes JSON only for
+explicit import and export. It flattens folders, writes requests at the export root,
+and ignores Postman-only behavior. Database and file operations stay off the GTK
 main thread.
 The native schema and flat-collection UI are implemented. Collections contain
-requests directly without folders; Postman conversion remains. See
+requests directly without folders. See
 [`storage.md`](storage.md) for the approved layout, transaction, initialization, and
 performance requirements.
 
-The collection sidebar uses a saved-collection dropdown and modal creation flow.
+The centered header dropdown selects saved collections. The left header menu opens
+the modal collection-creation flow and the Postman import/export actions.
 Request creation and management live in right-click context menus, while request-name
 search is applied on Enter or when the search field loses focus. Collection request
 free-text edits autosave on focus loss, while discrete and contextual mutations save
@@ -84,7 +85,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-On 2026-09-19, these checks passed: 77 headless unit tests and one allocation
+On 2026-09-19, these checks passed: 82 headless unit tests and one allocation
 regression test passed. Local HTTP integration tests require permission to bind
 loopback sockets. The default suite skips the GTK widget-lifetime test, which can
 be run in a desktop session with:

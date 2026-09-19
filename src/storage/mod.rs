@@ -278,6 +278,42 @@ impl CollectionStore {
         })
     }
 
+    /// Loads a consistent, complete snapshot for explicit interchange export.
+    /// Normal collection navigation continues to use the lazy list/load methods.
+    pub fn load_collection_for_export(
+        &self,
+        collection_id: Uuid,
+    ) -> Result<(CollectionSummary, Vec<CollectionRequest>), StorageError> {
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(StorageError::Database)?;
+        let name = transaction
+            .query_row(
+                "SELECT name FROM collections WHERE id = ?1",
+                [SqlId::new(collection_id)],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(StorageError::Database)?
+            .ok_or_else(|| StorageError::InvalidData {
+                message: format!("collection {collection_id} was not found"),
+            })?;
+        let nodes = self.list_requests(collection_id)?;
+        let requests = nodes
+            .into_iter()
+            .map(|node| self.load_request(node.id))
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().map_err(StorageError::Database)?;
+        Ok((
+            CollectionSummary {
+                id: collection_id,
+                name,
+            },
+            requests,
+        ))
+    }
+
     fn load_multipart_fields(&self, request_id: Uuid) -> Result<Vec<MultipartField>, StorageError> {
         let mut statement = self
             .connection

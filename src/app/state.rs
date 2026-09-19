@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -31,6 +32,8 @@ pub struct AppState {
 pub enum DeferredAction {
     CreateCollection,
     LoadCollection(CollectionSummary),
+    ImportPostman(PathBuf),
+    ExportPostman(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +64,11 @@ pub enum Action {
     LoadCollection(CollectionSummary),
     LoadRequest(Uuid),
     SaveCollection(CollectionChanges),
+    ImportPostman(PathBuf),
+    ExportPostman {
+        collection_id: Uuid,
+        destination: PathBuf,
+    },
     CollectionOperationCompleted,
     ImportCurl(String),
     ExportCurl(Arc<Request>),
@@ -232,6 +240,16 @@ impl AppState {
             Action::SaveCollection(changes) => {
                 self.begin_collection_effect(Effect::SaveCollection(changes))
             }
+            Action::ImportPostman(source) => {
+                self.begin_collection_effect(Effect::ImportPostman(source))
+            }
+            Action::ExportPostman {
+                collection_id,
+                destination,
+            } => self.begin_collection_effect(Effect::ExportPostman {
+                collection_id,
+                destination,
+            }),
             Action::CollectionOperationCompleted => {
                 let was_busy = self.collection_busy.replace(false);
                 Update {

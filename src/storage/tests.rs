@@ -197,28 +197,11 @@ fn updating_one_request_does_not_rewrite_another() {
             &[],
         )
         .unwrap();
-    store
-        .connection()
-        .execute(
-            "UPDATE requests SET postman_extra = '{\"marker\":true}' WHERE node_id = ?1",
-            [second.node.id.to_string()],
-        )
-        .unwrap();
-
     std::sync::Arc::make_mut(&mut first.request).url = "https://example.com/changed".to_owned();
     store
         .save_collection(&collection, &[], std::slice::from_ref(&first), &[])
         .unwrap();
 
-    let marker: Option<String> = store
-        .connection()
-        .query_row(
-            "SELECT postman_extra FROM requests WHERE node_id = ?1",
-            [second.node.id.to_string()],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(marker.as_deref(), Some("{\"marker\":true}"));
     assert_eq!(store.load_request(second.node.id).unwrap(), second);
 }
 
@@ -240,14 +223,6 @@ fn renaming_a_request_updates_only_its_node() {
             &[],
         )
         .unwrap();
-    store
-        .connection()
-        .execute(
-            "UPDATE requests SET postman_extra = '{\"marker\":true}' WHERE node_id = ?1",
-            [request.node.id.to_string()],
-        )
-        .unwrap();
-
     let mut renamed = request.node.clone();
     renamed.name = "After".to_owned();
     store
@@ -257,15 +232,6 @@ fn renaming_a_request_updates_only_its_node() {
     let loaded = store.load_request(request.node.id).unwrap();
     assert_eq!(loaded.node.name, "After");
     assert_eq!(loaded.request, request.request);
-    let marker: Option<String> = store
-        .connection()
-        .query_row(
-            "SELECT postman_extra FROM requests WHERE node_id = ?1",
-            [request.node.id.to_string()],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(marker.as_deref(), Some("{\"marker\":true}"));
 }
 
 #[test]
@@ -363,6 +329,38 @@ fn managed_database_uses_private_linux_permissions() {
 }
 
 #[test]
+fn loads_a_complete_collection_snapshot_for_export() {
+    let mut store = CollectionStore::open_in_memory().unwrap();
+    let collection = collection("Export");
+    let first = CollectionRequest::new(
+        collection.id,
+        "First",
+        0,
+        request("https://example.com/first"),
+    );
+    let second = CollectionRequest::new(
+        collection.id,
+        "Second",
+        1,
+        request("https://example.com/second"),
+    );
+    store
+        .save_collection(
+            &collection,
+            &[first.node.clone(), second.node.clone()],
+            &[first.clone(), second.clone()],
+            &[],
+        )
+        .unwrap();
+
+    let (loaded_collection, loaded_requests) =
+        store.load_collection_for_export(collection.id).unwrap();
+
+    assert_eq!(loaded_collection, collection);
+    assert_eq!(loaded_requests, [first, second]);
+}
+
+#[test]
 fn initializes_the_flat_schema_directly() {
     let store = CollectionStore::open_in_memory().unwrap();
     let mut columns = store
@@ -374,10 +372,7 @@ fn initializes_the_flat_schema_directly() {
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(
-        columns,
-        ["id", "collection_id", "name", "position", "postman_extra"]
-    );
+    assert_eq!(columns, ["id", "collection_id", "name", "position"]);
     assert_eq!(store.most_recently_opened_collection().unwrap(), None);
 }
 
