@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use uuid::Uuid;
 
 use crate::{
@@ -18,14 +20,31 @@ pub enum Effect {
     LoadCollection(CollectionSummary),
     LoadRequest(Uuid),
     SaveCollection(CollectionChanges),
-    ExecuteRequest { id: u64, request: Request },
-    CancelRequest { id: u64 },
+    ImportPostman(PathBuf),
+    ExportPostman {
+        collection_id: Uuid,
+        destination: PathBuf,
+    },
+    ExecuteRequest {
+        id: u64,
+        request: Request,
+    },
+    CancelRequest {
+        id: u64,
+    },
 }
 
 #[derive(Debug)]
 pub struct CollectionList {
     pub collections: Vec<CollectionSummary>,
     pub most_recently_opened: Option<CollectionSummary>,
+}
+
+#[derive(Debug)]
+pub struct PostmanImport {
+    pub collection: CollectionSummary,
+    pub nodes: Vec<CollectionNode>,
+    pub first_request: Option<CollectionRequest>,
 }
 
 /// The result of executing an [`Effect`].
@@ -46,6 +65,11 @@ pub enum EffectOutput {
     },
     CollectionSaved {
         changes: CollectionChanges,
+        result: Result<(), String>,
+    },
+    PostmanImported(Result<PostmanImport, String>),
+    PostmanExported {
+        destination: PathBuf,
         result: Result<(), String>,
     },
     RequestExecuted {

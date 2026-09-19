@@ -9,8 +9,9 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 - Send GET, POST, PUT, PATCH, DELETE, and HEAD requests over HTTP or HTTPS.
 - Enter ordered request headers, including repeated names, and enable or disable each row.
 - Send a JSON body without reformatting its source text.
-- Edit JSON with two-space indentation, automatic object/array pair completion,
-  closer alignment, and native undo/redo.
+- Edit JSON with GtkSourceView syntax highlighting that follows the GTK light/dark
+  theme, bracket matching, two-space indentation, automatic object/array pair
+  completion, closer alignment, and native undo/redo.
 - Send ordered multipart text and file fields, including repeated names. File uploads
   are streamed with bounded memory use.
 - Validate URLs, headers, and JSON before sending.
@@ -29,6 +30,8 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 - Search the active collection by request name and use request context menus to
   create, rename, duplicate, delete, or copy a request as cURL. Request details are
   loaded from storage only when selected.
+- Import Postman Collection v2.1 files into flat request lists and export collections
+  as root-level Postman requests. Postman-only behavior is ignored.
 
 Pakpos verifies HTTPS certificates, does not follow redirects automatically, and does
 not retry requests.
@@ -36,8 +39,9 @@ not retry requests.
 ## Status
 
 Updated 2026-09-19. Pakpos supports scratch requests, assisted JSON editing, and
-native persistence for flat collections of requests. The initial release is not
-complete; Postman collection import/export remains unimplemented.
+native persistence for flat collections of requests and Postman v2.1 import/export.
+The initial release still requires interoperability, performance, and manual UI
+verification.
 
 | Area | Progress |
 | --- | --- |
@@ -49,8 +53,8 @@ complete; Postman collection import/export remains unimplemented.
 | SQLite collections, request management, search, and autosave | Available; flat request lists with lazy detail loading |
 | Application, UI, and runtime separation | Implemented; HTTP and SQLite work run off the GTK main thread |
 | Allocation reductions and GTK ownership fixes | Implemented; audit and regression coverage added |
-| JSON editor indentation, bracket completion, and undo/redo | Available |
-| Postman v2.1 import/export | Planned |
+| GtkSourceView JSON editor, indentation, bracket completion, and undo/redo | Available |
+| Postman v2.1 import/export | Available for supported request fields; folders flatten on import |
 | Release memory and storage performance measurements | Partial evidence; full scenarios pending |
 | Accessibility and Postman interoperability verification | Pending |
 
@@ -66,13 +70,13 @@ Pakpos needs Rust and GTK 4.10 or newer.
 On Arch Linux:
 
 ```sh
-sudo pacman -S --needed base-devel gtk4 pkgconf rust
+sudo pacman -S --needed base-devel gtk4 gtksourceview5 pkgconf rust
 ```
 
 On Debian or Ubuntu:
 
 ```sh
-sudo apt install build-essential libgtk-4-dev pkg-config
+sudo apt install build-essential libgtk-4-dev libgtksourceview-5-dev pkg-config
 ```
 
 Then build and start the application:
@@ -90,7 +94,7 @@ cargo test
 cargo build --release
 ```
 
-Formatting and strict Clippy checks pass, along with 77 headless unit tests and one
+Formatting and strict Clippy checks pass, along with 82 headless unit tests and one
 allocation regression test. Coverage includes application state, JSON editing, request
 validation, cURL conversion, response handling, local HTTP integration, and
 transactional SQLite storage. One GTK widget-lifetime test is excluded from the

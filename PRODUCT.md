@@ -7,7 +7,8 @@ was updated on 2026-09-19.
 ## Implementation progress
 
 The core HTTP workflow, multipart uploads, response classification/downloads, cURL
-sharing, assisted JSON editing, and autosaved flat SQLite collections are implemented.
+sharing, assisted JSON editing, autosaved flat SQLite collections, and Postman v2.1
+import/export are implemented.
 Collection UI includes creation and selection, request search, and request creation,
 duplication, renaming, and confirmed deletion. Request details load on selection;
 clean inactive details are released while unsaved edits are retained.
@@ -18,23 +19,22 @@ reduces validation/export/response copies, consumes no-op autosave flags, and br
 GTK ownership cycles. Measurements and remaining costs are recorded in the
 [allocation audit](docs/memory-allocation-audit.md).
 
-The JSON editor inserts two-space indentation, completes nested object/array pairs,
-skips generated closers, removes untouched pairs together, and aligns closers with
-their opening line. Its structural behavior is disabled inside strings and handles
-escaped quotes and backslashes. Tab and Shift+Tab also operate on selected lines.
-Assisted edits use native grouped undo actions, while loading and cURL import preserve
-the supplied source and establish a fresh undo baseline.
+The GtkSourceView JSON editor provides syntax highlighting, bracket matching,
+two-space indentation, smart backspace, and native undo/redo. Pakpos completes nested
+object/array pairs, skips generated closers, removes untouched pairs together, and
+aligns closers with their opening line. Its structural behavior is disabled inside
+strings and handles escaped quotes and backslashes. Tab and Shift+Tab also operate on
+selected lines. Loading and cURL import preserve the supplied source and establish a
+fresh undo baseline.
 
 Validation at this revision: formatting and strict all-target/all-feature Clippy
-passed; 77 headless unit tests and one allocation regression test passed. The default
+passed; 82 headless unit tests and one allocation regression test passed. The default
 suite skips one display-dependent GTK widget-lifetime test; the allocation audit
 records a separate successful display run. This coverage does not complete all
 acceptance criteria below.
 
 Remaining initial-release work:
 
-- Implement Postman v2.1 import/export, folder flattening, unsupported-field
-  preservation and disclosure, and blocking of unsupported request behavior.
 - Add interoperability fixtures, schema validation, and actual Postman round-trip
   checks against a local server.
 - Measure current release-build peak and settled RSS for idle, everyday use,
@@ -121,8 +121,8 @@ Implementation constraints:
   introduce a language server or browser runtime for these conveniences.
 - Avoid unbounded caches, background services, and duplicate collection models.
   Load collection and request-list metadata without eagerly loading every request body.
-  Load the active request on demand, and retain unsupported imported Postman data
-  without keeping an unnecessary duplicate of the full imported document.
+  Load the active request on demand, and do not keep the full imported Postman
+  document after converting its supported requests.
 - Verify repeated use: run 100 sequential requests returning a 1 MiB body, replacing
   the response each time. Compare settled memory after the first 10 requests and
   after the final request; investigate growth above 20 MiB and any continuing upward
@@ -375,7 +375,7 @@ help, restrict native storage permissions where possible, and never log those va
 ### Storage performance requirements
 
 - Listing collections reads collection metadata only. It must not deserialize all
-  request headers, bodies, multipart fields, or preserved Postman data.
+  request headers, bodies, or multipart fields.
 - Opening a collection loads the ordered request list needed by the sidebar,
   but request details are loaded on selection. Keep only the open collection's
   necessary metadata and active editing state in memory.
@@ -406,35 +406,30 @@ query strings, repeated fields, ordering, and disabled flags across round trips.
 Normalize structured URLs without dropping query entries or changing escaping.
 Flatten imported folders into the collection request list in source order. Export
 requests at the collection root; folder structure and folder-only metadata do not
-round-trip. Disclose this conversion and any inherited unsupported behavior.
+round-trip.
 
 Compatibility is for the supported request subset, not the entire Postman runtime.
 Imports may include authentication configuration, scripts, variables, unsupported
-methods, or other body modes. Store unsupported JSON fields as opaque native records
-associated with the relevant collection, request, or body so a later export
-can merge them back where untouched. Do not retain a redundant full-document copy.
-Show a concise import summary of unsupported behavior.
-Do not execute scripts or resolve variables. Block sending an affected request when
-it depends on unsupported settings, including inherited collection/folder auth or
-unresolved `{{variables}}`; identify what must be replaced with supported literal
-values, headers, or body settings. A user must explicitly remove/replace unsupported
-behavior rather than having Pakpos silently reinterpret it.
+methods, or other body modes. Ignore and discard Postman-only behavior and unknown
+fields rather than storing a second compatibility model. Do not execute scripts,
+resolve variables, or apply Postman authentication. Skip requests whose HTTP method
+Pakpos does not support. Import a supported request with no body when its body mode
+is unsupported.
 
 Parse and validate imports fully before changing application state, then apply
 native persistence in one transaction before activating the imported collection.
 Reject other collection
 versions with a message asking the user to export v2.1. A failed import must neither
 change the open collection nor partially populate the database. Do not claim
-compatibility with every Postman feature or silently discard unsupported fields on
-export.
+compatibility with every Postman feature.
 
 ## Minimal interface
 
 - A native window with a compact collection sidebar and main request/response area.
-- The sidebar starts with a dropdown of saved collections and an adjacent `+` button
-  that opens the New collection modal. Do not show a persistent collection-name
-  input. Import Postman and Export Postman may remain in the header menu. Attach cURL
-  copy/paste actions to the Send control as a compact drop-down menu.
+- Center the saved-collection dropdown in the header. Put New Collection, Import
+  Postman, and Export Postman in the collection menu on the header's left side. Do
+  not show a persistent collection-name input. Attach cURL copy/paste actions to the
+  Send control as a compact drop-down menu.
 - Place a request-name search input above the request list. Apply its filter only
   when the user presses Enter or the input loses focus; do not add a submit button.
 - Do not show persistent Add, Duplicate, Remove, or request-name input controls.
@@ -515,8 +510,8 @@ The initial release is complete when the following are demonstrated:
   disabled headers, JSON, and multipart files. Supported values survive a round trip.
 - Exports validate against the v2.1 schema and can actually be imported into Postman;
   representative supported requests behave equivalently against a local test server.
-- Unsupported imported features are preserved and disclosed, and affected requests
-  cannot be sent silently with altered semantics. Invalid imports preserve current work.
+- Postman-only behavior is ignored on import, unsupported methods are skipped, and
+  unsupported body modes become empty bodies. Invalid imports preserve current work.
 - Collection listing and request selection follow the lazy-loading and storage
   performance requirements without blocking the GTK main thread.
 - Native GTK light/dark appearance and keyboard navigation remain usable without

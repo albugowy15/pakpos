@@ -28,10 +28,6 @@ pub(super) fn build_sidebar(autosave: AutosaveTrigger) -> SidebarWidgets {
     let collection_picker = DropDown::from_strings(&[]);
     collection_picker.set_width_request(240);
     collection_picker.set_tooltip_text(Some("Active collection"));
-    let new_collection = Button::builder()
-        .label("+")
-        .tooltip_text("Create collection")
-        .build();
     let request_heading_row = GtkBox::new(Orientation::Horizontal, 12);
     let requests = ListBox::builder()
         .selection_mode(SelectionMode::Single)
@@ -61,7 +57,6 @@ pub(super) fn build_sidebar(autosave: AutosaveTrigger) -> SidebarWidgets {
         root: sidebar,
         collection_picker,
         collection_choices: Rc::new(RefCell::new(Vec::new())),
-        new_collection,
         new_request,
         search,
         applied_search: Rc::new(RefCell::new(String::new())),
@@ -117,10 +112,6 @@ pub(super) fn setup_collection_actions(
 
     application.set_accels_for_action("win.new-collection", &["<Control>n"]);
     application.set_accels_for_action("win.focus-collections", &["<Control>o"]);
-
-    sidebar
-        .new_collection
-        .set_action_name(Some("win.new-collection"));
 
     let new_request_action = gio::SimpleAction::new("new-request", None);
     new_request_action.connect_activate({

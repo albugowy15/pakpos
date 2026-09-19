@@ -2,7 +2,7 @@
 
 Status: Native schema, persistence operations, and the flat-collection UI are
 implemented. Collections contain requests directly; folders are not supported.
-Postman conversion remains pending.
+Postman v2.1 conversion is implemented for Pakpos-supported request fields.
 
 Pakpos uses one embedded SQLite database as its native working store. Postman
 Collection v2.1 JSON is supported through explicit import and export and is not the
@@ -38,11 +38,11 @@ may be refined during implementation without changing the product behavior.
 
 | Record | Required data |
 | --- | --- |
-| Collection | Stable ID, name, timestamps, preserved Postman collection metadata |
-| Request metadata | Stable ID, collection ID, name, list position, preserved item metadata |
-| Request details | Request ID, method, URL, body mode, JSON source text, preserved Postman request/body metadata |
-| Header | Request ID, position, enabled state, name, value, preserved Postman header metadata |
-| Multipart field | Request ID, position, enabled state, field name, text/file kind, text value or resolved file path, source path context, preserved Postman field metadata |
+| Collection | Stable ID, name, timestamps |
+| Request metadata | Stable ID, collection ID, name, list position |
+| Request details | Request ID, method, URL, body mode, JSON source text |
+| Header | Request ID, position, enabled state, name, value |
+| Multipart field | Request ID, position, enabled state, field name, text/file kind, text value or resolved file path |
 
 Use persisted UUIDs or identifiers with equivalent collision resistance. Names are
 display values and are never keys. Enforce collection ownership, request-detail integrity,
@@ -50,9 +50,8 @@ and ordered-row uniqueness with database constraints where
 practical. Deleting a collection or request must remove its dependent native rows
 in the same transaction after the required user confirmation.
 
-Unsupported Postman values are stored only at the record to which they belong, as
-opaque JSON that can be merged into a later export. Do not keep the original full
-Postman document as a second collection model.
+Postman-only fields are discarded during import. Do not keep the original Postman
+document or an opaque compatibility model in native storage.
 
 ## Loading behavior
 
@@ -126,8 +125,11 @@ Export reads a consistent snapshot of one native collection and writes a user-ch
 nor alters autosave state. Confirm before replacing an existing export.
 
 Resolve relative multipart paths against the imported Postman file's directory.
-Retain enough path context to rebase them relative to an export destination when
-possible, without copying file contents into SQLite or JSON.
+Store the resolved path and emit it relative to an export destination when it is
+inside that directory, without copying file contents into SQLite or JSON. Folder
+items are recursively flattened; exports place all requests at the root. Variables,
+authentication, scripts, and unknown fields are ignored. Unsupported methods are
+skipped, while unsupported body modes become empty bodies.
 
 ## Security
 
@@ -143,7 +145,8 @@ release.
 Persistence tests must use temporary databases and cover transactions, constraints,
 ordering, duplicate names, disabled/repeated fields, deletion, restart persistence,
 lock errors, and schema initialization. Postman conversion tests remain independent of SQLite
-tests and must include unsupported-field preservation and multipart path rebasing.
+tests and must include folder flattening, ignored Postman-only behavior, root-level
+exports, and multipart path rebasing.
 
 Before release, measure collection listing with 100 collections and request-list loading,
 request selection, and one-request autosave with a 1,000-request collection. Record query

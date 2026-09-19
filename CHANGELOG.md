@@ -22,6 +22,11 @@ All notable changes to this project will be documented in this file.
 - Classify JSON, text, HTML, attachment, binary, and missing-content-type responses.
 - Decode common declared text charsets and expose raw JSON alongside formatted JSON.
 - Stream binary and oversized text responses into safe, collision-free Downloads files.
+- Import Postman Collection v2.1 files as flat native collections and export supported
+  requests at the Postman collection root.
+- Use GtkSourceView 5 with an adaptive light/dark JSON theme, bracket matching,
+  indentation, smart backspace, and native undo/redo while retaining Pakpos pair
+  completion.
 
 ## [0.2.4] - 2026-03-10
 

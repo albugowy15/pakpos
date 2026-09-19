@@ -1,6 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
-use gtk::{EventControllerKey, TextBuffer, TextMark, TextView, gdk, glib, prelude::*};
+use gtk::{EventControllerKey, TextBuffer, TextMark, gdk, glib, prelude::*};
+use sourceview5::View;
 
 const INDENT: &str = "  ";
 
@@ -9,8 +10,6 @@ enum KeyAction {
     Open(char),
     Close(char),
     Enter,
-    Indent,
-    Outdent,
     Backspace,
 }
 
@@ -22,7 +21,6 @@ struct Edit {
     cursor: usize,
     generated_closer: Option<(usize, char)>,
     consume_generated_closer: bool,
-    selection: Option<(usize, usize)>,
 }
 
 impl Edit {
@@ -34,7 +32,6 @@ impl Edit {
             cursor,
             generated_closer: None,
             consume_generated_closer: false,
-            selection: None,
         }
     }
 }
@@ -49,8 +46,19 @@ pub(super) struct JsonEditorState {
     generated_closers: RefCell<Vec<GeneratedCloser>>,
 }
 
-pub(super) fn configure(view: &TextView) -> Rc<JsonEditorState> {
+pub(super) fn configure(view: &View) -> Rc<JsonEditorState> {
     let state = Rc::new(JsonEditorState::default());
+    view.buffer().connect_changed({
+        let view = view.downgrade();
+        move |_| {
+            if let Some(view) = view.upgrade() {
+                // GtkTextView normally invalidates changed glyph runs itself. A
+                // full widget invalidation also clears stale cached glyphs after
+                // the surrounding GtkPaned changes the editor allocation.
+                view.queue_draw();
+            }
+        }
+    });
     let controller = EventControllerKey::new();
     controller.connect_key_pressed({
         let view = view.downgrade();
@@ -66,7 +74,7 @@ pub(super) fn configure(view: &TextView) -> Rc<JsonEditorState> {
     state
 }
 
-pub(super) fn set_text(view: &TextView, state: &JsonEditorState, text: &str) {
+pub(super) fn set_text(view: &View, state: &JsonEditorState, text: &str) {
     let buffer = view.buffer();
     clear_generated_closers(&buffer, state);
     // Loading and cURL import establish a new document baseline. They must not
@@ -78,7 +86,7 @@ pub(super) fn set_text(view: &TextView, state: &JsonEditorState, text: &str) {
 }
 
 fn handle_key(
-    view: &TextView,
+    view: &View,
     state: &JsonEditorState,
     key: gdk::Key,
     modifiers: gdk::ModifierType,
@@ -100,12 +108,6 @@ fn handle_key(
         Some(KeyAction::Close(']'))
     } else if key == gdk::Key::Return || key == gdk::Key::KP_Enter {
         Some(KeyAction::Enter)
-    } else if key == gdk::Key::ISO_Left_Tab
-        || (key == gdk::Key::Tab && modifiers.contains(gdk::ModifierType::SHIFT_MASK))
-    {
-        Some(KeyAction::Outdent)
-    } else if key == gdk::Key::Tab {
-        Some(KeyAction::Indent)
     } else if key == gdk::Key::BackSpace {
         Some(KeyAction::Backspace)
     } else {
@@ -122,7 +124,7 @@ fn handle_key(
         let end = end.offset().max(0) as usize;
         (start.min(end), start.max(end))
     });
-    if selection.is_some() && !matches!(action, KeyAction::Indent | KeyAction::Outdent) {
+    if selection.is_some() {
         return glib::Propagation::Proceed;
     }
     let cursor = buffer.cursor_position().max(0) as usize;
@@ -130,11 +132,7 @@ fn handle_key(
     let generated = generated_closer_for_action(&buffer, state, &text, cursor, action);
     let generated_index = generated.map(|(index, _, _)| index);
     let generated = generated.map(|(_, offset, value)| (offset, value));
-    let planned = if let Some((start, end)) = selection {
-        plan_selection_indent(&text, start, end, action == KeyAction::Outdent)
-    } else {
-        plan_edit(&text, cursor, action, generated)
-    };
+    let planned = plan_edit(&text, cursor, action, generated);
     let Some(edit) = planned else {
         return glib::Propagation::Proceed;
     };
@@ -158,14 +156,7 @@ fn handle_key(
         buffer.delete(&mut start, &mut end);
     }
     buffer.insert(&mut start, &edit.replacement);
-    if let Some((start, end)) = edit.selection {
-        buffer.select_range(
-            &buffer.iter_at_offset(end as i32),
-            &buffer.iter_at_offset(start as i32),
-        );
-    } else {
-        buffer.place_cursor(&buffer.iter_at_offset(edit.cursor as i32));
-    }
+    buffer.place_cursor(&buffer.iter_at_offset(edit.cursor as i32));
     if let Some((offset, value)) = edit.generated_closer {
         let mark = buffer.create_mark(None, &buffer.iter_at_offset(offset as i32), false);
         state
@@ -270,13 +261,6 @@ fn plan_edit(
         }
         KeyAction::Close(_) => None,
         KeyAction::Enter => newline_edit(text, cursor, &context),
-        KeyAction::Indent => Some(Edit::replace(
-            cursor,
-            cursor,
-            INDENT.to_owned(),
-            cursor + INDENT.chars().count(),
-        )),
-        KeyAction::Outdent => outdent_edit(text, cursor),
         KeyAction::Backspace
             if !context.in_string
                 && generated_closer.is_some()
@@ -417,56 +401,6 @@ fn align_existing_generated_closer(
     Some(edit)
 }
 
-fn outdent_edit(text: &str, cursor: usize) -> Option<Edit> {
-    let start = line_start(text, cursor);
-    let remove = (start..(start + INDENT.len()).min(cursor))
-        .take_while(|offset| char_at(text, *offset) == Some(' '))
-        .count();
-    if remove == 0 {
-        return Some(Edit::replace(cursor, cursor, String::new(), cursor));
-    }
-    Some(Edit::replace(
-        start,
-        start + remove,
-        String::new(),
-        cursor - remove,
-    ))
-}
-
-fn plan_selection_indent(text: &str, start: usize, end: usize, outdent: bool) -> Option<Edit> {
-    let range_start = line_start(text, start);
-    let selected = chars_between(text, range_start, end);
-    if selected.is_empty() {
-        return None;
-    }
-
-    let line_count = selected.bytes().filter(|value| *value == b'\n').count()
-        + usize::from(!selected.ends_with('\n'));
-    let mut replacement = String::with_capacity(selected.len() + line_count * INDENT.len());
-    for line in selected.split_inclusive('\n') {
-        if outdent {
-            let remove = line
-                .chars()
-                .take(INDENT.len())
-                .take_while(|value| *value == ' ')
-                .count();
-            replacement.extend(line.chars().skip(remove));
-        } else {
-            replacement.push_str(INDENT);
-            replacement.push_str(line);
-        }
-    }
-    let replacement_chars = replacement.chars().count();
-    let mut edit = Edit::replace(
-        range_start,
-        end,
-        replacement,
-        range_start + replacement_chars,
-    );
-    edit.selection = Some((range_start, range_start + replacement_chars));
-    Some(edit)
-}
-
 fn line_start(text: &str, cursor: usize) -> usize {
     text.chars()
         .take(cursor)
@@ -489,13 +423,6 @@ fn previous_non_whitespace(text: &str, start: usize, cursor: usize) -> Option<ch
         .take(cursor.saturating_sub(start))
         .filter(|value| !value.is_whitespace())
         .last()
-}
-
-fn chars_between(text: &str, start: usize, end: usize) -> String {
-    text.chars()
-        .skip(start)
-        .take(end.saturating_sub(start))
-        .collect()
 }
 
 fn range_is_spaces(text: &str, start: usize, end: usize) -> bool {
@@ -599,25 +526,6 @@ mod tests {
         assert_eq!(edit.replacement, "");
         assert_eq!(edit.cursor, 3);
         assert!(edit.consume_generated_closer);
-    }
-
-    #[test]
-    fn tab_and_shift_tab_use_two_spaces() {
-        let indent = edit("x", 0, KeyAction::Indent, None).unwrap();
-        assert_eq!(indent.replacement, "  ");
-        let outdent = edit("  value", 5, KeyAction::Outdent, None).unwrap();
-        assert_eq!((outdent.start, outdent.end, outdent.cursor), (0, 2, 3));
-    }
-
-    #[test]
-    fn selected_lines_indent_and_outdent_without_tabs() {
-        let indent = plan_selection_indent("one\ntwo", 1, 7, false).unwrap();
-        assert_eq!(indent.replacement, "  one\n  two");
-        assert_eq!(indent.selection, Some((0, 11)));
-
-        let outdent = plan_selection_indent("  one\n two", 2, 10, true).unwrap();
-        assert_eq!(outdent.replacement, "one\ntwo");
-        assert_eq!(outdent.selection, Some((0, 7)));
     }
 
     #[test]

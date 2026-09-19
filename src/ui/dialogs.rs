@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use gtk::{
-    AlertDialog, Align, ApplicationWindow, Box as GtkBox, Button, Entry, EventControllerFocus,
-    Label, Orientation, Window, gio, glib, prelude::*,
+    AlertDialog, Align, ApplicationWindow, Box as GtkBox, Button, Entry, Label, Orientation,
+    Window, gio, prelude::*,
 };
 use pakpos::{
     app::{Action, CollectionSession, EffectOutput},
@@ -170,8 +170,10 @@ pub(super) fn show_rename_request_dialog(
         .build();
     let actions = GtkBox::new(Orientation::Horizontal, 6);
     actions.set_halign(Align::End);
+    let cancel = Button::with_label("Cancel");
     let done = Button::with_label("Done");
     done.add_css_class("suggested-action");
+    actions.append(&cancel);
     actions.append(&done);
     content.append(&Label::new(Some("Request name")));
     content.append(&name);
@@ -207,12 +209,14 @@ pub(super) fn show_rename_request_dialog(
             }
         }
     });
-    let rename_focus = EventControllerFocus::new();
-    rename_focus.connect_leave({
-        let commit_rename = commit_rename.clone();
-        move |_| commit_rename()
+    cancel.connect_clicked({
+        let dialog = dialog.downgrade();
+        move |_| {
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
+            }
+        }
     });
-    name.add_controller(rename_focus);
     done.connect_clicked({
         let commit_rename = commit_rename.clone();
         let dialog = dialog.downgrade();
@@ -221,13 +225,6 @@ pub(super) fn show_rename_request_dialog(
             if let Some(dialog) = dialog.upgrade() {
                 dialog.close();
             }
-        }
-    });
-    dialog.connect_close_request({
-        let commit_rename = commit_rename.clone();
-        move |_| {
-            commit_rename();
-            glib::Propagation::Proceed
         }
     });
     dialog.present();

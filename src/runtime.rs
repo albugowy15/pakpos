@@ -1,6 +1,10 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
+    fs::{self, OpenOptions},
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
+    path::Path,
     rc::Rc,
     sync::{Arc, mpsc},
     thread,
@@ -8,8 +12,9 @@ use std::{
 
 use gtk::glib;
 use pakpos::{
-    app::{CollectionList, Effect, EffectOutput},
+    app::{CollectionList, Effect, EffectOutput, PostmanImport},
     net::execute,
+    postman,
     storage::CollectionStore,
 };
 use tokio::sync::oneshot;
@@ -146,8 +151,93 @@ impl EffectRunner {
                     "The collection worker stopped unexpectedly.",
                 );
             }
+            Effect::ImportPostman(source) => run_background(
+                move || {
+                    let json = fs::read_to_string(&source)
+                        .map_err(|error| format!("Could not read {}: {error}", source.display()))?;
+                    let directory = source.parent().unwrap_or_else(|| Path::new("."));
+                    let imported = postman::import_collection(&json, directory)
+                        .map_err(|error| error.to_string())?;
+                    let nodes = imported
+                        .requests
+                        .iter()
+                        .map(|request| request.node.clone())
+                        .collect::<Vec<_>>();
+                    let first_request = imported.requests.first().cloned();
+                    let mut store =
+                        CollectionStore::open_default().map_err(|error| error.to_string())?;
+                    store
+                        .save_collection(&imported.summary, &nodes, &imported.requests, &[])
+                        .map_err(|error| error.to_string())?;
+                    store
+                        .mark_collection_opened(imported.summary.id)
+                        .map_err(|error| error.to_string())?;
+                    Ok(PostmanImport {
+                        collection: imported.summary,
+                        nodes,
+                        first_request,
+                    })
+                },
+                move |result| complete(EffectOutput::PostmanImported(result)),
+                "The Postman import worker stopped unexpectedly.",
+            ),
+            Effect::ExportPostman {
+                collection_id,
+                destination,
+            } => {
+                let reported_destination = destination.clone();
+                run_background(
+                    move || {
+                        let store =
+                            CollectionStore::open_default().map_err(|error| error.to_string())?;
+                        let (collection, requests) = store
+                            .load_collection_for_export(collection_id)
+                            .map_err(|error| error.to_string())?;
+                        let directory = destination.parent().unwrap_or_else(|| Path::new("."));
+                        let json = postman::export_collection(&collection, &requests, directory)
+                            .map_err(|error| error.to_string())?;
+                        write_atomic(&destination, json.as_bytes())
+                    },
+                    move |result| {
+                        complete(EffectOutput::PostmanExported {
+                            destination: reported_destination,
+                            result,
+                        })
+                    },
+                    "The Postman export worker stopped unexpectedly.",
+                );
+            }
         }
     }
+}
+
+fn write_atomic(destination: &Path, contents: &[u8]) -> Result<(), String> {
+    let directory = destination
+        .parent()
+        .ok_or_else(|| "The export destination has no parent directory.".to_owned())?;
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "The export destination needs a valid file name.".to_owned())?;
+    let temporary = directory.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|error| format!("Could not create the export file: {error}"))?;
+        file.write_all(contents)
+            .map_err(|error| format!("Could not write the export file: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Could not finish the export file: {error}"))?;
+        fs::rename(&temporary, destination)
+            .map_err(|error| format!("Could not replace the export destination: {error}"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
 }
 
 fn run_background<T: Send + 'static>(

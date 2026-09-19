@@ -2,10 +2,11 @@ use std::{cell::RefCell, rc::Rc};
 
 use gtk::{
     Align, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry,
-    EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, TextBuffer,
-    TextView, gio, glib, prelude::*,
+    EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, TextView, gio, glib,
+    prelude::*,
 };
 use pakpos::models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody};
+use sourceview5::prelude::{BufferExt, ViewExt};
 
 use super::json_editor::{self, JsonEditorState};
 
@@ -31,7 +32,7 @@ pub(super) struct MultipartWidgets {
 #[derive(Clone)]
 pub(super) struct BodyWidgets {
     pub(super) mode: DropDown,
-    pub(super) json_editor: TextView,
+    pub(super) json_editor: sourceview5::View,
     pub(super) json_editor_state: Rc<JsonEditorState>,
     pub(super) multipart_box: GtkBox,
     pub(super) multipart_rows: Rc<RefCell<Vec<MultipartWidgets>>>,
@@ -180,19 +181,42 @@ pub(super) fn build_body_page(
         .build();
     let mode = DropDown::from_strings(&["None", "JSON", "Multipart"]);
     mode.set_halign(Align::Start);
-    let editor_buffer = TextBuffer::builder().enable_undo(true).build();
+    let language = sourceview5::LanguageManager::default().language("json");
+    let editor_buffer = match language.as_ref() {
+        Some(language) => sourceview5::Buffer::builder()
+            .language(language)
+            .highlight_syntax(true)
+            .highlight_matching_brackets(true)
+            .enable_undo(true)
+            .build(),
+        None => sourceview5::Buffer::builder()
+            .highlight_matching_brackets(true)
+            .enable_undo(true)
+            .build(),
+    };
     editor_buffer.set_max_undo_levels(100);
-    let editor = TextView::builder()
+    configure_json_style_scheme(&editor_buffer);
+    let editor = sourceview5::View::builder()
         .buffer(&editor_buffer)
+        .auto_indent(true)
+        .indent_on_tab(true)
+        .indent_width(2)
+        .tab_width(2)
+        .insert_spaces_instead_of_tabs(true)
+        .smart_backspace(true)
         .monospace(true)
+        .hexpand(true)
+        .vexpand(true)
         .wrap_mode(gtk::WrapMode::None)
         .top_margin(8)
         .bottom_margin(8)
         .left_margin(8)
         .right_margin(8)
         .build();
+    editor.space_drawer().set_enable_matrix(false);
     let json_editor_state = json_editor::configure(&editor);
     let editor_scroll = scrolled(&editor);
+    editor_scroll.set_vexpand(true);
     autosave_on_blur(&editor, autosave);
     editor_scroll.set_min_content_height(150);
     editor_scroll.set_visible(false);
@@ -225,6 +249,7 @@ pub(super) fn build_body_page(
     multipart_panel.append(&multipart_box);
     multipart_panel.append(&add);
     let multipart_scroll = scrolled(&multipart_panel);
+    multipart_scroll.set_vexpand(true);
     multipart_scroll.set_min_content_height(150);
     multipart_scroll.set_visible(false);
 
@@ -252,6 +277,49 @@ pub(super) fn build_body_page(
             autosave: autosave.clone(),
         },
     )
+}
+
+fn configure_json_style_scheme(buffer: &sourceview5::Buffer) {
+    let Some(settings) = gtk::Settings::default() else {
+        return;
+    };
+    apply_json_style_scheme(buffer, &settings);
+    settings.connect_gtk_application_prefer_dark_theme_notify({
+        let buffer = buffer.downgrade();
+        move |settings| {
+            if let Some(buffer) = buffer.upgrade() {
+                apply_json_style_scheme(&buffer, settings);
+            }
+        }
+    });
+    settings.connect_gtk_theme_name_notify({
+        let buffer = buffer.downgrade();
+        move |settings| {
+            if let Some(buffer) = buffer.upgrade() {
+                apply_json_style_scheme(&buffer, settings);
+            }
+        }
+    });
+}
+
+fn apply_json_style_scheme(buffer: &sourceview5::Buffer, settings: &gtk::Settings) {
+    let scheme_id = json_style_scheme_id(
+        settings.is_gtk_application_prefer_dark_theme(),
+        settings.gtk_theme_name().as_deref(),
+    );
+    if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme(scheme_id) {
+        buffer.set_style_scheme(Some(&scheme));
+    }
+}
+
+pub(super) fn json_style_scheme_id(prefer_dark: bool, theme_name: Option<&str>) -> &'static str {
+    let theme_name_is_dark =
+        theme_name.is_some_and(|name| name.to_ascii_lowercase().contains("dark"));
+    if prefer_dark || theme_name_is_dark {
+        "Adwaita-dark"
+    } else {
+        "Adwaita"
+    }
 }
 
 pub(super) fn add_multipart_row(
@@ -385,7 +453,7 @@ pub(super) fn scrolled<W: IsA<gtk::Widget>>(child: &W) -> ScrolledWindow {
         .build()
 }
 
-pub(super) fn buffer_text(view: &TextView) -> String {
+pub(super) fn buffer_text(view: &impl IsA<TextView>) -> String {
     let buffer = view.buffer();
     buffer
         .text(&buffer.start_iter(), &buffer.end_iter(), true)

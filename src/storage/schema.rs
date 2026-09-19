@@ -12,16 +12,14 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), StorageError
                 id TEXT PRIMARY KEY NOT NULL,
                 name TEXT NOT NULL,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                postman_extra TEXT
+                updated_at INTEGER NOT NULL DEFAULT (unixepoch())
             ) STRICT;
 
             CREATE TABLE IF NOT EXISTS collection_nodes (
                 id TEXT PRIMARY KEY NOT NULL,
                 collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
-                position INTEGER NOT NULL CHECK (position >= 0),
-                postman_extra TEXT
+                position INTEGER NOT NULL CHECK (position >= 0)
             ) STRICT;
 
             CREATE INDEX IF NOT EXISTS collection_nodes_order
@@ -33,9 +31,7 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), StorageError
                 method TEXT NOT NULL,
                 url TEXT NOT NULL,
                 body_mode TEXT NOT NULL CHECK (body_mode IN ('none', 'json', 'multipart')),
-                json_body TEXT,
-                postman_extra TEXT,
-                body_extra TEXT
+                json_body TEXT
             ) STRICT;
 
             CREATE TABLE IF NOT EXISTS request_headers (
@@ -44,7 +40,6 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), StorageError
                 enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
                 name TEXT NOT NULL,
                 value TEXT NOT NULL,
-                postman_extra TEXT,
                 PRIMARY KEY (request_id, position)
             ) STRICT;
 
@@ -55,8 +50,6 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), StorageError
                 name TEXT NOT NULL,
                 value_kind TEXT NOT NULL CHECK (value_kind IN ('text', 'file')),
                 value BLOB NOT NULL,
-                source_base_path BLOB,
-                postman_extra TEXT,
                 PRIMARY KEY (request_id, position)
             ) STRICT;
 
