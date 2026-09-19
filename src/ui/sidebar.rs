@@ -57,7 +57,7 @@ pub(super) fn build_sidebar(autosave: AutosaveTrigger) -> SidebarWidgets {
     status.add_css_class("dim-label");
     sidebar.append(&request_heading_row);
     sidebar.append(&request_scroll);
-    SidebarWidgets {
+    Rc::new(super::SidebarWidgetHandles {
         root: sidebar,
         collection_picker,
         collection_choices: Rc::new(RefCell::new(Vec::new())),
@@ -69,7 +69,7 @@ pub(super) fn build_sidebar(autosave: AutosaveTrigger) -> SidebarWidgets {
         request_rows: Rc::new(RefCell::new(std::collections::HashMap::new())),
         status,
         autosave,
-    }
+    })
 }
 
 pub(super) fn setup_collection_actions(
@@ -83,11 +83,17 @@ pub(super) fn setup_collection_actions(
     let new_action = gio::SimpleAction::new("new-collection", None);
     new_action.connect_activate({
         let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         let response_summary = response_summary.clone();
-        let window = window.clone();
+        let window = window.downgrade();
         move |_, _| {
+            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
+                return;
+            };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             continue_after_autosave(
                 &window,
                 &state,
@@ -119,10 +125,13 @@ pub(super) fn setup_collection_actions(
     let new_request_action = gio::SimpleAction::new("new-request", None);
     new_request_action.connect_activate({
         let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         let response_summary = response_summary.clone();
         move |_, _| {
+            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
+                return;
+            };
             if add_collection_request(&state, &sidebar, &editor) {
                 show_message(&response_summary, "Created HTTP Request.");
             } else {
@@ -136,11 +145,17 @@ pub(super) fn setup_collection_actions(
 
     sidebar.collection_picker.connect_selected_notify({
         let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         let response_summary = response_summary.clone();
-        let window = window.clone();
+        let window = window.downgrade();
         move |picker| {
+            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
+                return;
+            };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             if state.syncing_collection_picker.get() {
                 return;
             }
@@ -177,19 +192,25 @@ pub(super) fn setup_collection_actions(
 
     sidebar.search.connect_activate({
         let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        move |_| apply_request_search(&state, &sidebar, &editor)
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
+        move |_| {
+            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
+                return;
+            };
+            apply_request_search(&state, &sidebar, &editor);
+        }
     });
     let search_focus = EventControllerFocus::new();
     search_focus.connect_leave({
         let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         move |_| {
+            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
+                return;
+            };
             let state = state.clone();
-            let sidebar = sidebar.clone();
-            let editor = editor.clone();
             glib::idle_add_local_once(move || apply_request_search(&state, &sidebar, &editor));
         }
     });
@@ -197,9 +218,12 @@ pub(super) fn setup_collection_actions(
 
     sidebar.requests.connect_row_selected({
         let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         move |_, selected_row| {
+            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
+                return;
+            };
             if state.syncing_request_list.get() {
                 return;
             }
@@ -230,11 +254,17 @@ pub(super) fn setup_collection_actions(
 
     sidebar.autosave.replace(Some(Rc::new({
         let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         let response_summary = response_summary.clone();
-        let window = window.clone();
+        let window = window.downgrade();
         move || {
+            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
+                return;
+            };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             if !state.applying_editor.get() {
                 state.autosave_requested.set(true);
                 if !state.collection_busy.get() {
@@ -251,11 +281,17 @@ pub(super) fn setup_collection_actions(
     })));
     glib::timeout_add_local(std::time::Duration::from_millis(30), {
         let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         let response_summary = response_summary.clone();
-        let window = window.clone();
+        let window = window.downgrade();
         move || {
+            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
+                return glib::ControlFlow::Break;
+            };
+            let Some(window) = window.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             if state.autosave_requested.get() && !state.collection_busy.get() {
                 autosave_current_collection(&state, &sidebar, &editor, &response_summary, &window);
             }
@@ -276,73 +312,64 @@ pub(super) fn refresh_collection_choices(
         return;
     }
     state.autosave_requested.set(false);
-    state
-        .effects
-        .run(update.effects.into_iter().next().unwrap(), {
-            let state = state.clone();
-            let sidebar = sidebar.clone();
-            let editor = editor.clone();
-            let response_summary = response_summary.clone();
-            move |output| {
-                let EffectOutput::CollectionsListed(result) = output else {
-                    return;
-                };
-                state.update(Action::CollectionOperationCompleted);
-                match result {
-                    Ok(collection_list) => {
-                        let collections = collection_list.collections;
-                        let active_id = state
-                            .collection
-                            .borrow()
-                            .as_ref()
-                            .map(|session| session.summary().id);
-                        let labels = collections
-                            .iter()
-                            .map(|collection| collection.name.clone())
-                            .collect::<Vec<_>>();
-                        let label_refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
-                        let model = StringList::new(&label_refs);
-                        let selected_collection = active_id
-                            .and_then(|id| {
-                                collections
-                                    .iter()
-                                    .find(|collection| collection.id == id)
-                                    .cloned()
-                            })
-                            .or(collection_list.most_recently_opened)
-                            .or_else(|| collections.first().cloned());
-                        let selected = selected_collection
-                            .as_ref()
-                            .and_then(|selected| {
-                                collections
-                                    .iter()
-                                    .position(|collection| collection.id == selected.id)
-                            })
-                            .map_or(u32::MAX, |index| index as u32);
-                        state.syncing_collection_picker.set(true);
-                        sidebar.collection_picker.set_model(Some(&model));
-                        sidebar.collection_picker.set_selected(selected);
-                        sidebar
-                            .collection_picker
-                            .set_sensitive(!collections.is_empty());
-                        sidebar.collection_choices.replace(collections);
-                        state.syncing_collection_picker.set(false);
-                        if state.collection.borrow().is_none()
-                            && let Some(collection) = selected_collection
-                        {
-                            load_collection(
-                                collection,
-                                &state,
-                                &sidebar,
-                                &editor,
-                                &response_summary,
-                            );
-                        }
+    state.effects.run(update.effect.unwrap(), {
+        let state = state.clone();
+        let sidebar = sidebar.clone();
+        let editor = editor.clone();
+        let response_summary = response_summary.clone();
+        move |output| {
+            let EffectOutput::CollectionsListed(result) = output else {
+                return;
+            };
+            state.update(Action::CollectionOperationCompleted);
+            match result {
+                Ok(collection_list) => {
+                    let collections = collection_list.collections;
+                    let active_id = state
+                        .collection
+                        .borrow()
+                        .as_ref()
+                        .map(|session| session.summary().id);
+                    let label_refs = collections
+                        .iter()
+                        .map(|collection| collection.name.as_str())
+                        .collect::<Vec<_>>();
+                    let model = StringList::new(&label_refs);
+                    let selected_collection = active_id
+                        .and_then(|id| {
+                            collections
+                                .iter()
+                                .find(|collection| collection.id == id)
+                                .cloned()
+                        })
+                        .or(collection_list.most_recently_opened)
+                        .or_else(|| collections.first().cloned());
+                    let selected = selected_collection
+                        .as_ref()
+                        .and_then(|selected| {
+                            collections
+                                .iter()
+                                .position(|collection| collection.id == selected.id)
+                        })
+                        .map_or(u32::MAX, |index| index as u32);
+                    state.syncing_collection_picker.set(true);
+                    sidebar.collection_picker.set_model(Some(&model));
+                    sidebar.collection_picker.set_selected(selected);
+                    sidebar
+                        .collection_picker
+                        .set_sensitive(!collections.is_empty());
+                    sidebar.collection_choices.replace(collections);
+                    state.syncing_collection_picker.set(false);
+                    if state.collection.borrow().is_none()
+                        && let Some(collection) = selected_collection
+                    {
+                        load_collection(collection, &state, &sidebar, &editor, &response_summary);
                     }
-                    Err(error) => show_error(&response_summary, &error),
                 }
+                Err(error) => show_error(&response_summary, &error),
             }
-        });
+        }
+    });
 }
 
 pub(super) fn sync_collection_picker(state: &Rc<RequestState>, sidebar: &SidebarWidgets) {
@@ -372,6 +399,39 @@ pub(super) fn attach_request_context_menu(
     sidebar: &SidebarWidgets,
     editor: &EditorWidgets,
 ) {
+    let gesture = GestureClick::new();
+    gesture.set_button(3);
+    gesture.connect_pressed({
+        let request_row = request_row.downgrade();
+        let state = Rc::downgrade(state);
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
+        move |gesture, _, x, y| {
+            let (Some(request_row), Some(state), Some(sidebar), Some(editor)) = (
+                request_row.upgrade(),
+                state.upgrade(),
+                sidebar.upgrade(),
+                editor.upgrade(),
+            ) else {
+                return;
+            };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let popover =
+                build_request_context_menu(&request_row, request_id, &state, &sidebar, &editor);
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.popup();
+        }
+    });
+    request_row.add_controller(gesture);
+}
+
+pub(super) fn build_request_context_menu(
+    request_row: &Widget,
+    request_id: Uuid,
+    state: &Rc<RequestState>,
+    sidebar: &SidebarWidgets,
+    editor: &EditorWidgets,
+) -> Popover {
     let popover = Popover::builder().has_arrow(true).build();
     popover.set_parent(request_row);
     let menu = GtkBox::builder()
@@ -392,25 +452,42 @@ pub(super) fn attach_request_context_menu(
     popover.set_child(Some(&menu));
 
     duplicate.connect_clicked({
-        let popover = popover.clone();
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let popover = popover.downgrade();
+        let state = Rc::downgrade(state);
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         move |_| {
+            let (Some(popover), Some(state), Some(sidebar), Some(editor)) = (
+                popover.upgrade(),
+                state.upgrade(),
+                sidebar.upgrade(),
+                editor.upgrade(),
+            ) else {
+                return;
+            };
             popover.popdown();
             duplicate_request(request_id, &state, &sidebar, &editor, &sidebar.status);
         }
     });
     delete.connect_clicked({
-        let popover = popover.clone();
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let request_row = request_row.clone();
+        let popover = popover.downgrade();
+        let state = Rc::downgrade(state);
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
+        let request_row = request_row.downgrade();
         move |_| {
+            let (Some(popover), Some(state), Some(sidebar), Some(editor)) = (
+                popover.upgrade(),
+                state.upgrade(),
+                sidebar.upgrade(),
+                editor.upgrade(),
+            ) else {
+                return;
+            };
             popover.popdown();
             let Some(window) = request_row
-                .root()
+                .upgrade()
+                .and_then(|row| row.root())
                 .and_then(|root| root.downcast::<ApplicationWindow>().ok())
             else {
                 return;
@@ -419,15 +496,24 @@ pub(super) fn attach_request_context_menu(
         }
     });
     rename.connect_clicked({
-        let popover = popover.clone();
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let request_row = request_row.clone();
+        let popover = popover.downgrade();
+        let state = Rc::downgrade(state);
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
+        let request_row = request_row.downgrade();
         move |_| {
+            let (Some(popover), Some(state), Some(sidebar), Some(editor)) = (
+                popover.upgrade(),
+                state.upgrade(),
+                sidebar.upgrade(),
+                editor.upgrade(),
+            ) else {
+                return;
+            };
             popover.popdown();
             let Some(window) = request_row
-                .root()
+                .upgrade()
+                .and_then(|row| row.root())
                 .and_then(|root| root.downcast::<ApplicationWindow>().ok())
             else {
                 return;
@@ -436,12 +522,20 @@ pub(super) fn attach_request_context_menu(
         }
     });
     copy_curl.connect_clicked({
-        let popover = popover.clone();
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
+        let popover = popover.downgrade();
+        let state = Rc::downgrade(state);
+        let sidebar = Rc::downgrade(sidebar);
+        let editor = Rc::downgrade(editor);
         let clipboard = gtk::prelude::WidgetExt::display(request_row).clipboard();
         move |_| {
+            let (Some(popover), Some(state), Some(sidebar), Some(editor)) = (
+                popover.upgrade(),
+                state.upgrade(),
+                sidebar.upgrade(),
+                editor.upgrade(),
+            ) else {
+                return;
+            };
             popover.popdown();
             copy_request_as_curl(
                 request_id,
@@ -454,17 +548,11 @@ pub(super) fn attach_request_context_menu(
         }
     });
 
-    let gesture = GestureClick::new();
-    gesture.set_button(3);
-    gesture.connect_pressed({
+    popover.connect_closed(|popover| {
         let popover = popover.clone();
-        move |gesture, _, x, y| {
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-            popover.popup();
-        }
+        glib::idle_add_local_once(move || popover.unparent());
     });
-    request_row.add_controller(gesture);
+    popover
 }
 
 pub(super) fn context_menu_button(icon_name: &str, label: &str) -> Button {
@@ -501,20 +589,20 @@ pub(super) fn render_request_buttons(
             .expect("request list contains list box rows");
         sidebar.requests.remove(&row);
     }
-    let Some((mut requests, active_request)) = state
-        .collection
-        .borrow()
-        .as_ref()
-        .map(|session| (session.request_items(), session.active_request()))
-    else {
+    let collection = state.collection.borrow();
+    let Some(session) = collection.as_ref() else {
         append_empty_request_row(&sidebar.requests, "Select a collection to view requests.");
         state.syncing_request_list.set(false);
         return;
     };
-    let search = sidebar.applied_search.borrow().clone();
-    if !search.is_empty() {
-        requests.retain(|request| request.name.to_lowercase().contains(&search));
-    }
+    let active_request = session.active_request();
+    let search = sidebar.applied_search.borrow();
+    let mut requests = session
+        .request_items()
+        .filter(|request| {
+            search.is_empty() || request.name.to_lowercase().contains(search.as_str())
+        })
+        .collect::<Vec<_>>();
     requests.sort_by_key(|request| request.position);
     if requests.is_empty() {
         let message = if search.is_empty() {
@@ -543,7 +631,7 @@ pub(super) fn render_request_buttons(
         let method = Label::builder().halign(Align::Start).build();
         method.set_markup(&format!("<b>{}</b>", request.method));
         let title = Label::builder()
-            .label(&request.name)
+            .label(request.name)
             .halign(Align::Start)
             .hexpand(true)
             .xalign(0.0)
@@ -578,6 +666,25 @@ fn append_empty_request_row(requests: &ListBox, message: &str) {
     label.add_css_class("dim-label");
     row.set_child(Some(&label));
     requests.append(&row);
+}
+
+pub(super) fn sync_request_method(state: &Rc<RequestState>, sidebar: &SidebarWidgets, id: Uuid) {
+    let collection = state.collection.borrow();
+    let Some(request) = collection.as_ref().and_then(|session| session.request(id)) else {
+        return;
+    };
+    let rows = sidebar.request_rows.borrow();
+    let Some(label) = rows
+        .get(&id)
+        .and_then(|row| row.child())
+        .and_then(|content| content.first_child())
+        .and_then(|widget| widget.downcast::<Label>().ok())
+    else {
+        return;
+    };
+    if label.text().as_str() != request.method.as_str() {
+        label.set_markup(&format!("<b>{}</b>", request.method));
+    }
 }
 
 pub(super) fn sync_active_request_row(

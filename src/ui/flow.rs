@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 use gtk::{ApplicationWindow, Label, gdk, glib, prelude::*};
 use pakpos::{
@@ -10,7 +10,9 @@ use uuid::Uuid;
 
 use super::dialogs::show_create_collection_dialog;
 use super::editor::{EditorWidgets, apply_request, collect_request, request_autosave};
-use super::sidebar::{render_request_buttons, sync_active_request_row, sync_collection_picker};
+use super::sidebar::{
+    render_request_buttons, sync_active_request_row, sync_collection_picker, sync_request_method,
+};
 use super::{RequestState, SidebarWidgets, show_error, show_message};
 
 pub(super) fn continue_after_autosave(
@@ -74,12 +76,13 @@ pub(super) fn autosave_current_collection(
     if state.collection_busy.get() {
         return;
     }
+    state.autosave_requested.set(false);
     capture_active_request(state, sidebar, editor);
     let Some(pending) = pending_collection_save(state) else {
         return;
     };
     let update = state.update(Action::SaveCollection(pending));
-    let Some(effect) = update.effects.into_iter().next() else {
+    let Some(effect) = update.effect else {
         return;
     };
     show_message(response_summary, "Saving changes automatically…");
@@ -177,7 +180,7 @@ pub(super) fn load_collection(
     response_summary: &Label,
 ) {
     let update = state.update(Action::LoadCollection(collection));
-    let Some(effect) = update.effects.into_iter().next() else {
+    let Some(effect) = update.effect else {
         return;
     };
     show_message(response_summary, "Opening collection…");
@@ -193,7 +196,7 @@ pub(super) fn load_collection(
             state.update(Action::CollectionOperationCompleted);
             match result {
                 Ok(nodes) => {
-                    let session = CollectionSession::from_tree(collection.clone(), nodes);
+                    let session = CollectionSession::from_requests(collection, nodes);
                     let first_request = session.first_request();
                     state.update(Action::SetCollection(session));
                     sidebar.search.set_text("");
@@ -257,7 +260,7 @@ pub(super) fn duplicate_request(
         return;
     }
     let update = state.update(Action::LoadRequest(source_id));
-    let Some(effect) = update.effects.into_iter().next() else {
+    let Some(effect) = update.effect else {
         return;
     };
     show_message(response_summary, "Loading request…");
@@ -290,7 +293,7 @@ pub(super) fn duplicate_request(
 
 pub(super) fn append_duplicate_request(
     source_node: CollectionNode,
-    request: Request,
+    request: Arc<Request>,
     state: &Rc<RequestState>,
     sidebar: &SidebarWidgets,
     editor: &EditorWidgets,
@@ -323,13 +326,13 @@ pub(super) fn copy_request_as_curl(
         .collection
         .borrow()
         .as_ref()
-        .and_then(|session| session.request(request_id).cloned());
+        .and_then(|session| session.shared_request(request_id));
     if let Some(request) = request {
         copy_request_to_clipboard(request, state, response_summary, clipboard);
         return;
     }
     let update = state.update(Action::LoadRequest(request_id));
-    let Some(effect) = update.effects.into_iter().next() else {
+    let Some(effect) = update.effect else {
         return;
     };
     show_message(response_summary, "Loading request…");
@@ -356,7 +359,7 @@ pub(super) fn copy_request_as_curl(
 }
 
 pub(super) fn copy_request_to_clipboard(
-    request: Request,
+    request: Arc<Request>,
     state: &Rc<RequestState>,
     summary: &Label,
     clipboard: &gdk::Clipboard,
@@ -423,7 +426,7 @@ pub(super) fn select_request(
     }
 
     let update = state.update(Action::LoadRequest(request_id));
-    let Some(effect) = update.effects.into_iter().next() else {
+    let Some(effect) = update.effect else {
         return;
     };
     show_message(response_summary, "Loading request…");
@@ -448,13 +451,13 @@ pub(super) fn select_request(
                         state.update(Action::ApplyLoadedRequest(saved_request));
                     }
                     apply_loaded_request(request_id, &state, &sidebar, &editor);
-                    render_request_buttons(&state, &sidebar, &editor);
+                    sync_request_method(&state, &sidebar, request_id);
                     show_message(&response_summary, "Loaded the saved request.");
                 }
                 Err(error) => {
                     state.update(Action::ClearActiveRequest(request_id));
                     clear_request_editor(&sidebar, &editor);
-                    render_request_buttons(&state, &sidebar, &editor);
+                    sync_active_request_row(&state, &sidebar, None);
                     show_error(&response_summary, &error);
                 }
             }
@@ -475,9 +478,17 @@ fn queue_request_button_render(
 
 pub(super) fn capture_active_request(
     state: &Rc<RequestState>,
-    _sidebar: &SidebarWidgets,
+    sidebar: &SidebarWidgets,
     editor: &EditorWidgets,
 ) {
+    if !state
+        .collection
+        .borrow()
+        .as_ref()
+        .is_some_and(|session| session.active_request().is_some())
+    {
+        return;
+    }
     let Ok(editor_request) = collect_request(
         &editor.method,
         &editor.url,
@@ -487,6 +498,14 @@ pub(super) fn capture_active_request(
         return;
     };
     state.update(Action::CaptureActiveRequest(editor_request));
+    let active = state
+        .collection
+        .borrow()
+        .as_ref()
+        .and_then(CollectionSession::active_request);
+    if let Some(id) = active {
+        sync_request_method(state, sidebar, id);
+    }
 }
 
 pub(super) fn apply_loaded_request(
@@ -499,11 +518,11 @@ pub(super) fn apply_loaded_request(
         .collection
         .borrow()
         .as_ref()
-        .and_then(|session| session.request(request_id).cloned());
+        .and_then(|session| session.shared_request(request_id));
     if let Some(request) = request {
         state.applying_editor.set(true);
         apply_request(
-            request,
+            &request,
             &editor.method,
             &editor.url,
             &editor.headers_box,
@@ -516,7 +535,7 @@ pub(super) fn apply_loaded_request(
 
 pub(super) fn clear_request_editor(_sidebar: &SidebarWidgets, editor: &EditorWidgets) {
     apply_request(
-        Request::default(),
+        &Request::default(),
         &editor.method,
         &editor.url,
         &editor.headers_box,

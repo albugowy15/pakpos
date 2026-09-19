@@ -41,9 +41,10 @@ database in the platform user-data directory. Native persistence and Postman v2.
 conversion are separate layers: collection metadata and the selected request can be
 loaded on demand from SQLite, while Postman JSON is read or written only for explicit
 import and export. Database and file operations must stay off the GTK main thread.
-The native schema and first flat-collection UI slice are implemented; nested folder
-editing and Postman conversion remain. See [`storage.md`](storage.md) for the approved
-layout, transaction, migration, and performance requirements.
+The native schema and flat-collection UI are implemented. Collections contain
+requests directly without folders; Postman conversion remains. See
+[`storage.md`](storage.md) for the approved layout, transaction, initialization, and
+performance requirements.
 
 The collection sidebar uses a saved-collection dropdown and modal creation flow.
 Request creation and management live in right-click context menus, while request-name

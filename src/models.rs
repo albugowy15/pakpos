@@ -158,15 +158,21 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn validated(self) -> Result<Self, ValidationError> {
-        self.validate(true)
+    pub fn validated(mut self) -> Result<Self, ValidationError> {
+        self.check(true)?;
+        let start = self.url.len() - self.url.trim_start().len();
+        let end = self.url.trim_end().len();
+        self.url.truncate(end);
+        self.url.drain(..start);
+        self.headers
+            .retain(|header| header.enabled && !header.is_blank());
+        if let RequestBody::Multipart(fields) = &mut self.body {
+            fields.retain(|field| field.enabled && !field.is_blank());
+        }
+        Ok(self)
     }
 
-    pub(crate) fn validated_for_import(self) -> Result<Self, ValidationError> {
-        self.validate(false)
-    }
-
-    fn validate(mut self, validate_files: bool) -> Result<Self, ValidationError> {
+    pub(crate) fn check(&self, validate_files: bool) -> Result<(), ValidationError> {
         let entered_url = self.url.trim();
         if entered_url.is_empty() {
             return Err(ValidationError::MissingUrl);
@@ -184,9 +190,7 @@ impl Request {
             });
         }
 
-        self.url = entered_url.to_owned();
-        let mut headers = Vec::with_capacity(self.headers.len());
-        for (index, header) in self.headers.into_iter().enumerate() {
+        for (index, header) in self.headers.iter().enumerate() {
             if header.is_blank() || !header.enabled {
                 continue;
             }
@@ -201,34 +205,30 @@ impl Request {
                 .map_err(|_| ValidationError::InvalidHeaderName { row })?;
             HeaderValue::from_str(&header.value)
                 .map_err(|_| ValidationError::InvalidHeaderValue { row })?;
-            headers.push(header);
         }
 
-        let body = match self.body {
-            RequestBody::None => RequestBody::None,
+        match &self.body {
+            RequestBody::None => {}
             RequestBody::Json(text) => {
                 if text.trim().is_empty() {
                     return Err(ValidationError::EmptyJsonBody);
                 }
-                serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
-                    ValidationError::InvalidJson {
-                        line: error.line(),
-                        column: error.column(),
-                        message: error.to_string(),
-                    }
+                validate_json(text).map_err(|error| ValidationError::InvalidJson {
+                    line: error.line(),
+                    column: error.column(),
+                    message: error.to_string(),
                 })?;
-                RequestBody::Json(text)
             }
             RequestBody::Multipart(fields) => {
-                if headers
-                    .iter()
-                    .any(|header| header.name.eq_ignore_ascii_case("content-type"))
-                {
+                if self.headers.iter().any(|header| {
+                    header.enabled
+                        && !header.is_blank()
+                        && header.name.eq_ignore_ascii_case("content-type")
+                }) {
                     return Err(ValidationError::MultipartContentType);
                 }
 
-                let mut validated = Vec::with_capacity(fields.len());
-                for (index, field) in fields.into_iter().enumerate() {
+                for (index, field) in fields.iter().enumerate() {
                     if !field.enabled || field.is_blank() {
                         continue;
                     }
@@ -267,15 +267,61 @@ impl Request {
                             })?;
                         }
                     }
-                    validated.push(field);
                 }
-                RequestBody::Multipart(validated)
             }
-        };
+        }
+        Ok(())
+    }
+}
 
-        self.headers = headers;
-        self.body = body;
-        Ok(self)
+// Validate with serde_json's normal scalar and recursion checks, but discard
+// values as they are visited instead of allocating a Value tree.
+pub(crate) fn validate_json(text: &str) -> Result<(), serde_json::Error> {
+    serde_json::from_str::<ValidJson>(text).map(|_| ())
+}
+
+struct ValidJson;
+
+impl<'de> Deserialize<'de> for ValidJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(Self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for ValidJson {
+    type Value = Self;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self, E> {
+        Ok(Self)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self, A::Error> {
+        while seq.next_element::<Self>()?.is_some() {}
+        Ok(Self)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+        while map.next_entry::<Self, Self>()?.is_some() {}
+        Ok(Self)
     }
 }
 
@@ -391,6 +437,59 @@ mod tests {
             url: url.to_owned(),
             ..Request::default()
         }
+    }
+
+    #[test]
+    fn streaming_json_validation_matches_value_validation() {
+        for text in [
+            r#"{"a":[1,true,null,{"escaped\u0020key":"a\nb"}],"a":2}"#,
+            "1e9999",
+            r#""\uD800""#,
+            r#"{"\uD800":0}"#,
+            "[1,]",
+            "[0] trailing",
+            "{} {}",
+            "",
+            "null",
+            "-1.25e3",
+            "18446744073709551616",
+        ] {
+            assert_eq!(
+                validate_json(text).is_ok(),
+                serde_json::from_str::<serde_json::Value>(text).is_ok(),
+                "{text}"
+            );
+        }
+        let deep = format!("{}0{}", "[".repeat(140), "]".repeat(140));
+        assert!(validate_json(&deep).is_err());
+    }
+
+    #[test]
+    fn validation_reuses_url_headers_and_multipart_buffers() {
+        let request = Request {
+            url: "  https://example.com/path?a=1&b=2  ".into(),
+            headers: vec![HeaderRow::default(), HeaderRow::enabled("X-Test", "yes")],
+            body: RequestBody::Multipart(vec![
+                MultipartField::text("", ""),
+                MultipartField::text("field", "value"),
+            ]),
+            ..Request::default()
+        };
+        let url_ptr = request.url.as_ptr();
+        let headers_ptr = request.headers.as_ptr();
+        let RequestBody::Multipart(fields) = &request.body else {
+            unreachable!()
+        };
+        let fields_ptr = fields.as_ptr();
+        let request = request.validated().unwrap();
+        assert_eq!(url_ptr, request.url.as_ptr());
+        assert_eq!(headers_ptr, request.headers.as_ptr());
+        assert_eq!(request.url, "https://example.com/path?a=1&b=2");
+        let RequestBody::Multipart(fields) = request.body else {
+            unreachable!()
+        };
+        assert_eq!(fields_ptr, fields.as_ptr());
+        assert_eq!(fields.len(), 1);
     }
 
     #[test]

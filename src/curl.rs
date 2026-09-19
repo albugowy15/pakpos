@@ -1,4 +1,7 @@
-use std::fmt;
+use std::{
+    borrow::{Borrow, Cow},
+    fmt,
+};
 
 use crate::models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody};
 
@@ -25,55 +28,58 @@ impl fmt::Display for CurlError {
 
 impl std::error::Error for CurlError {}
 
-pub fn to_command(request: Request) -> Result<String, CurlError> {
-    let request = request
-        .validated()
+pub fn to_command(request: impl Borrow<Request>) -> Result<String, CurlError> {
+    let request = request.borrow();
+    request
+        .check(true)
         .map_err(|error| CurlError::new(error.to_string()))?;
-    let mut arguments = vec![
-        "curl".to_owned(),
-        "--request".to_owned(),
-        request.method.as_str().to_owned(),
-        "--url".to_owned(),
-        shell_quote(&request.url),
-    ];
+    let mut command = format!("curl --request {} --url ", request.method);
+    shell_quote_into(&mut command, request.url.trim());
 
-    for header in request.headers {
-        arguments.push("--header".to_owned());
+    for header in request.headers.iter().filter(|header| {
+        header.enabled && !(header.name.trim().is_empty() && header.value.is_empty())
+    }) {
+        command.push_str(" --header ");
         let value = if header.value.is_empty() {
             format!("{};", header.name)
         } else {
             format!("{}: {}", header.name, header.value)
         };
-        arguments.push(shell_quote(&value));
+        shell_quote_into(&mut command, &value);
     }
 
-    match request.body {
+    match &request.body {
         RequestBody::None => {}
         RequestBody::Json(body) => {
-            arguments.push("--data-raw".to_owned());
-            arguments.push(shell_quote(&body));
+            command.push_str(" --data-raw ");
+            shell_quote_into(&mut command, body);
         }
         RequestBody::Multipart(fields) => {
-            for field in fields {
-                match field.value {
+            for field in fields
+                .iter()
+                .filter(|field| field.enabled && !field.name.trim().is_empty())
+            {
+                match &field.value {
                     MultipartValue::Text(value) => {
-                        arguments.push("--form-string".to_owned());
-                        arguments.push(shell_quote(&format!("{}={value}", field.name)));
+                        command.push_str(" --form-string ");
+                        shell_quote_into(&mut command, &format!("{}={value}", field.name));
                     }
                     MultipartValue::File(path) => {
-                        arguments.push("--form".to_owned());
-                        arguments.push(shell_quote(&format!(
-                            "{}=@{}",
-                            field.name,
-                            quote_form_file_path(&path.to_string_lossy())
-                        )));
+                        command.push_str(" --form ");
+                        shell_quote_into(
+                            &mut command,
+                            &format!(
+                                "{}=@{}",
+                                field.name,
+                                quote_form_file_path(&path.to_string_lossy())
+                            ),
+                        );
                     }
                 }
             }
         }
     }
-
-    Ok(arguments.join(" "))
+    Ok(command)
 }
 
 pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
@@ -214,7 +220,7 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
         RequestBody::None
     } else {
         let text = data_parts.join("&");
-        serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
+        crate::models::validate_json(&text).map_err(|error| {
             CurlError::new(format!(
                 "Pakpos currently imports cURL bodies as JSON, but this body is invalid at line {}, column {}: {error}",
                 error.line(),
@@ -240,8 +246,7 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
         body,
     };
     request
-        .clone()
-        .validated_for_import()
+        .check(false)
         .map_err(|error| CurlError::new(error.to_string()))?;
 
     Ok(CurlImport { request, warnings })
@@ -288,13 +293,13 @@ fn parse_header(value: &str) -> Result<HeaderRow, CurlError> {
     )))
 }
 
-fn parse_inline_data(value: &str, option: &str) -> Result<String, CurlError> {
+fn parse_inline_data<'a>(value: &'a str, option: &str) -> Result<&'a str, CurlError> {
     if value.starts_with('@') {
         return Err(CurlError::new(format!(
             "File-backed data in {option} is not supported. Paste the JSON body directly."
         )));
     }
-    Ok(value.to_owned())
+    Ok(value)
 }
 
 fn parse_form(value: &str, literal: bool) -> Result<MultipartField, CurlError> {
@@ -428,7 +433,10 @@ fn unsupported_option(option: &str) -> CurlError {
     ))
 }
 
-fn remove_line_continuations(command: &str) -> String {
+fn remove_line_continuations(command: &str) -> Cow<'_, str> {
+    if !command.contains("\\\n") {
+        return Cow::Borrowed(command);
+    }
     let mut normalized = String::with_capacity(command.len());
     let mut characters = command.chars().peekable();
     let mut in_single_quotes = false;
@@ -445,11 +453,21 @@ fn remove_line_continuations(command: &str) -> String {
             normalized.push(character);
         }
     }
-    normalized
+    Cow::Owned(normalized)
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
+fn shell_quote_into(output: &mut String, value: &str) {
+    output.reserve(value.len() + 2 + value.bytes().filter(|byte| *byte == b'\'').count() * 4);
+    output.push('\'');
+    let mut parts = value.split('\'');
+    if let Some(first) = parts.next() {
+        output.push_str(first);
+    }
+    for part in parts {
+        output.push_str("'\"'\"'");
+        output.push_str(part);
+    }
+    output.push('\'');
 }
 
 #[cfg(test)]

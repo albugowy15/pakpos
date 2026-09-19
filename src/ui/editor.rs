@@ -35,8 +35,9 @@ pub(super) struct BodyWidgets {
     pub(super) autosave: AutosaveTrigger,
 }
 
-#[derive(Clone)]
-pub(super) struct EditorWidgets {
+pub(super) type EditorWidgets = Rc<EditorWidgetHandles>;
+
+pub(super) struct EditorWidgetHandles {
     pub(super) method: DropDown,
     pub(super) url: Entry,
     pub(super) headers_box: GtkBox,
@@ -139,10 +140,16 @@ pub(super) fn add_header_row(
         value,
     });
     remove.connect_clicked({
-        let container = container.clone();
-        let rows = rows.clone();
+        let container = container.downgrade();
+        let rows = Rc::downgrade(rows);
+        let row = row.downgrade();
         let autosave = autosave.clone();
         move |_| {
+            let (Some(container), Some(rows), Some(row)) =
+                (container.upgrade(), rows.upgrade(), row.upgrade())
+            else {
+                return;
+            };
             let index = {
                 let rows = rows.borrow();
                 rows.iter().position(|item| item.row == row)
@@ -198,9 +205,12 @@ pub(super) fn build_body_page(
     add.connect_clicked({
         let multipart_box = multipart_box.clone();
         let multipart_rows = multipart_rows.clone();
-        let window = window.clone();
+        let window = window.downgrade();
         let autosave = autosave.clone();
         move |_| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             add_multipart_row(&multipart_box, &multipart_rows, &window, &autosave);
             request_autosave(&autosave);
         }
@@ -285,9 +295,12 @@ pub(super) fn add_multipart_row(
     });
     browse.connect_clicked({
         let value = value.clone();
-        let window = window.clone();
+        let window = window.downgrade();
         let autosave = autosave.clone();
         move |_| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             let dialog = FileDialog::builder()
                 .title("Choose multipart file")
                 .modal(true)
@@ -320,10 +333,16 @@ pub(super) fn add_multipart_row(
         value,
     });
     remove.connect_clicked({
-        let container = container.clone();
-        let rows = rows.clone();
+        let container = container.downgrade();
+        let rows = Rc::downgrade(rows);
+        let row = row.downgrade();
         let autosave = autosave.clone();
         move |_| {
+            let (Some(container), Some(rows), Some(row)) =
+                (container.upgrade(), rows.upgrade(), row.upgrade())
+            else {
+                return;
+            };
             let index = {
                 let rows = rows.borrow();
                 rows.iter().position(|item| item.row == row)
@@ -414,7 +433,7 @@ pub(super) fn collect_request(
 }
 
 pub(super) fn apply_request(
-    request: Request,
+    request: &Request,
     method: &DropDown,
     url: &Entry,
     headers_box: &GtkBox,
@@ -435,7 +454,7 @@ pub(super) fn apply_request(
     if request.headers.is_empty() {
         add_header_row(headers_box, header_rows, &body_widgets.autosave);
     } else {
-        for header in request.headers {
+        for header in &request.headers {
             add_header_row(headers_box, header_rows, &body_widgets.autosave);
             if let Some(widgets) = header_rows.borrow().last() {
                 widgets.enabled.set_active(header.enabled);
@@ -445,7 +464,7 @@ pub(super) fn apply_request(
         }
     }
 
-    match request.body {
+    match &request.body {
         RequestBody::None => {
             body_widgets.mode.set_selected(0);
             body_widgets.json_editor.buffer().set_text("");
@@ -453,13 +472,13 @@ pub(super) fn apply_request(
         }
         RequestBody::Json(body) => {
             body_widgets.mode.set_selected(1);
-            body_widgets.json_editor.buffer().set_text(&body);
+            body_widgets.json_editor.buffer().set_text(body);
             reset_multipart_rows(body_widgets, &[]);
         }
         RequestBody::Multipart(fields) => {
             body_widgets.mode.set_selected(2);
             body_widgets.json_editor.buffer().set_text("");
-            reset_multipart_rows(body_widgets, &fields);
+            reset_multipart_rows(body_widgets, fields);
         }
     }
 }

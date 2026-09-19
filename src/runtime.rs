@@ -1,4 +1,10 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::mpsc, thread};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::Rc,
+    sync::{Arc, mpsc},
+    thread,
+};
 
 use gtk::glib;
 use pakpos::{
@@ -64,7 +70,8 @@ impl EffectRunner {
                 "The collection worker stopped unexpectedly.",
             ),
             Effect::CreateCollection(collection) => {
-                let worker_collection = collection.clone();
+                let collection = Arc::new(collection);
+                let worker_collection = Arc::clone(&collection);
                 run_background(
                     move || {
                         let mut store =
@@ -76,21 +83,26 @@ impl EffectRunner {
                             .mark_collection_opened(worker_collection.id)
                             .map_err(|error| error.to_string())
                     },
-                    move |result| complete(EffectOutput::CollectionCreated { collection, result }),
+                    move |result| {
+                        complete(EffectOutput::CollectionCreated {
+                            collection: Arc::unwrap_or_clone(collection),
+                            result,
+                        })
+                    },
                     "The collection worker stopped unexpectedly.",
                 );
             }
             Effect::LoadCollection(collection) => {
-                let worker_collection = collection.clone();
+                let collection_id = collection.id;
                 run_background(
                     move || {
                         let mut store =
                             CollectionStore::open_default().map_err(|error| error.to_string())?;
                         let nodes = store
-                            .load_tree(worker_collection.id)
+                            .list_requests(collection_id)
                             .map_err(|error| error.to_string())?;
                         store
-                            .mark_collection_opened(worker_collection.id)
+                            .mark_collection_opened(collection_id)
                             .map_err(|error| error.to_string())?;
                         Ok(nodes)
                     },
@@ -110,7 +122,8 @@ impl EffectRunner {
                 "The collection worker stopped unexpectedly.",
             ),
             Effect::SaveCollection(changes) => {
-                let worker_changes = changes.clone();
+                let changes = Arc::new(changes);
+                let worker_changes = Arc::clone(&changes);
                 run_background(
                     move || {
                         let mut store =
@@ -124,7 +137,12 @@ impl EffectRunner {
                             )
                             .map_err(|error| error.to_string())
                     },
-                    move |result| complete(EffectOutput::CollectionSaved { changes, result }),
+                    move |result| {
+                        complete(EffectOutput::CollectionSaved {
+                            changes: Arc::unwrap_or_clone(changes),
+                            result,
+                        })
+                    },
                     "The collection worker stopped unexpectedly.",
                 );
             }
