@@ -1,7 +1,49 @@
 # Pakpos product specification
 
 Status: Approved for implementation on 2026-09-07. The native SQLite storage
-direction was approved on 2026-09-09. Implementation is underway.
+direction was approved on 2026-09-09. Implementation is underway; progress below
+was updated on 2026-09-19.
+
+## Implementation progress
+
+The core HTTP workflow, multipart uploads, response classification/downloads, cURL
+sharing, assisted JSON editing, and autosaved flat SQLite collections are implemented.
+Collection UI includes creation and selection, request search, and request creation,
+duplication, renaming, and confirmed deletion. Request details load on selection;
+clean inactive details are released while unsaved edits are retained.
+
+The application state/action/effect layer is separated from GTK and runtime I/O.
+The latest allocation work shares immutable request payloads across save snapshots,
+reduces validation/export/response copies, consumes no-op autosave flags, and breaks
+GTK ownership cycles. Measurements and remaining costs are recorded in the
+[allocation audit](docs/memory-allocation-audit.md).
+
+The JSON editor inserts two-space indentation, completes nested object/array pairs,
+skips generated closers, removes untouched pairs together, and aligns closers with
+their opening line. Its structural behavior is disabled inside strings and handles
+escaped quotes and backslashes. Tab and Shift+Tab also operate on selected lines.
+Assisted edits use native grouped undo actions, while loading and cURL import preserve
+the supplied source and establish a fresh undo baseline.
+
+Validation at this revision: formatting and strict all-target/all-feature Clippy
+passed; 77 headless unit tests and one allocation regression test passed. The default
+suite skips one display-dependent GTK widget-lifetime test; the allocation audit
+records a separate successful display run. This coverage does not complete all
+acceptance criteria below.
+
+Remaining initial-release work:
+
+- Implement Postman v2.1 import/export, folder flattening, unsupported-field
+  preservation and disclosure, and blocking of unsupported request behavior.
+- Add interoperability fixtures, schema validation, and actual Postman round-trip
+  checks against a local server.
+- Measure current release-build peak and settled RSS for idle, everyday use,
+  1 GiB transfers, and repeated requests. The historical idle baseline and Rust
+  allocation measurements are partial evidence, not release-budget verification.
+- Measure storage query counts, timings, and peak memory for 100 collections and a
+  1,000-request collection.
+- Complete the manual GTK accessibility, keyboard, theme, responsiveness, and
+  remaining acceptance checks.
 
 ## Purpose
 
@@ -33,9 +75,9 @@ it does not require invoking the curl executable.
   WebView, or a browser-based editor, including for JSON editing or HTML responses.
 - Use native GTK styling, including the user's theme. Do not override colors or
   introduce a custom theme. Adjust spacing, sizing, and typography where useful.
-- The inspected project contains a minimal `src/main.rs` and dependencies on serde,
-  serde_json, and uuid. Inspect the actual tree again before implementation and
-  preserve unrelated user changes; do not reconstruct removed code automatically.
+- The project now separates domain models, application state, GTK adapters, runtime
+  effects, and SQLite storage. Inspect the actual tree before further implementation
+  and preserve unrelated user changes; do not reconstruct removed code automatically.
 - Pakpos supports Linux desktop only. Follow Linux and XDG conventions directly;
   do not add Windows or macOS compatibility branches or packaging.
 
@@ -97,7 +139,7 @@ owner review; do not silently weaken limits or remove required features to meet 
 | Requests | GET, POST, PUT, PATCH, DELETE, HEAD over HTTP and HTTPS |
 | Headers | Editable, ordered headers with enable/disable controls |
 | Request body | None, JSON, and multipart/form-data with text and file fields |
-| Responses | Status, elapsed time, received body size, headers, and readable body |
+| Responses | Headers and readable body, with validation and transport errors shown as toasts |
 | Response formats | JSON, plain text, HTML source, and automatic file downloads |
 | Collections | Create, name, organize, autosave locally, and reopen saved requests |
 | Interoperability | Import and export Postman Collection v2.1 JSON; copy and paste cURL commands |
@@ -119,7 +161,7 @@ cookie jar or automatic authentication workflow in the initial release.
    are edited directly in the URL; a separate query editor is unnecessary.
 3. Edit headers and optionally choose a body mode.
 4. Select Send. Display an in-progress state and provide Cancel.
-5. Show the response or an actionable error. Allow editing and sending again.
+5. Show the response or an actionable error toast. Allow editing and sending again.
 6. When editing a request in a collection, persist changes automatically. Sending a
    scratch request does not require creating a collection.
 
@@ -210,8 +252,9 @@ are never embedded in the collection database or Postman exports.
 
 ## Response behavior
 
-Always show the HTTP status code, total elapsed time through body completion, body
-byte count after any transport decompression, and response headers. Preserve repeated
+Show response headers and the readable or downloaded body in the response tabs.
+Present validation, transport, and disk failures as transient, dismissible toasts
+rather than reserving permanent response space for a status label. Preserve repeated
 response headers. A HEAD response or response with no body shows a clear empty state
 without trying to parse JSON or creating an empty download.
 
@@ -401,8 +444,8 @@ export.
   confirmation, and Rename uses a focused dialog rather than a persistent input.
 - Request area: method selector, URL entry, and Send/Cancel control on one row;
   Headers and Body sections below. Body mode controls expose only relevant inputs.
-- Response area: status/time/size summary, Body and Headers views, loading/empty/error
-  states, and download result when applicable.
+- Response area: Body and Headers views, empty states, and download results when
+  applicable. Show errors as overlay toasts.
 - Use resizable panes and scrollable editors instead of a dense dashboard. The UI
   should remain usable at approximately 900 × 600 without clipping core controls.
 - Use standard GTK widgets, labels, focus behavior, file dialogs, and system theme.

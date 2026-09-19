@@ -9,11 +9,14 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 - Send GET, POST, PUT, PATCH, DELETE, and HEAD requests over HTTP or HTTPS.
 - Enter ordered request headers, including repeated names, and enable or disable each row.
 - Send a JSON body without reformatting its source text.
+- Edit JSON with two-space indentation, automatic object/array pair completion,
+  closer alignment, and native undo/redo.
 - Send ordered multipart text and file fields, including repeated names. File uploads
   are streamed with bounded memory use.
 - Validate URLs, headers, and JSON before sending.
 - Cancel an in-flight request or allow it to time out after 30 seconds.
-- Inspect status, elapsed time, received body size, headers, and a bounded 5 MiB response preview.
+- Inspect response headers and a bounded 5 MiB response preview. Validation and
+  transport errors appear as transient, dismissible toasts.
 - Pretty-print valid JSON responses and inspect their raw source.
 - Display plain text and HTML source with supported charset decoding.
 - Stream attachments, binary responses, and oversized text responses to the configured
@@ -32,21 +35,29 @@ not retry requests.
 
 ## Status
 
-Pakpos is under active development. The current build supports scratch requests and
-native persistence for flat collections of requests. Postman collection
-import/export is not available yet.
+Updated 2026-09-19. Pakpos supports scratch requests, assisted JSON editing, and
+native persistence for flat collections of requests. The initial release is not
+complete; Postman collection import/export remains unimplemented.
 
-| Area                                                           | Progress                                                    |
-| -------------------------------------------------------------- | ----------------------------------------------------------- |
-| Native GTK request editor and HTTP execution                   | Available                                                   |
-| Headers, JSON bodies, cancellation, and response inspection    | Available                                                   |
-| Copy and paste cURL                                            | Available for supported headers, JSON, and multipart fields |
-| Multipart form-data and streamed file uploads                  | Available                                                   |
-| Response classification, downloads, and charset handling       | Available                                                   |
-| JSON editor indentation and bracket completion                 | Planned                                                     |
-| SQLite-backed local collection persistence                     | Available for flat request collections                      |
-| Postman v2.1 import/export                  | Planned                                                     |
-| Full memory, accessibility, and interoperability verification  | In progress                                                 |
+| Area | Progress |
+| --- | --- |
+| Native GTK request editor and HTTP execution | Available |
+| Headers, JSON bodies, cancellation, and response inspection | Available |
+| Copy and paste cURL | Available for supported headers, JSON, and multipart fields |
+| Multipart form-data and streamed file uploads | Available |
+| Response classification, downloads, and charset handling | Available |
+| SQLite collections, request management, search, and autosave | Available; flat request lists with lazy detail loading |
+| Application, UI, and runtime separation | Implemented; HTTP and SQLite work run off the GTK main thread |
+| Allocation reductions and GTK ownership fixes | Implemented; audit and regression coverage added |
+| JSON editor indentation, bracket completion, and undo/redo | Available |
+| Postman v2.1 import/export | Planned |
+| Release memory and storage performance measurements | Partial evidence; full scenarios pending |
+| Accessibility and Postman interoperability verification | Pending |
+
+The [allocation audit](docs/memory-allocation-audit.md) records measured reductions
+and remaining costs. The [earlier idle RSS baseline](docs/memory-baseline.md) does
+not establish that the current build meets all release memory budgets. See
+[implementation progress](PRODUCT.md#implementation-progress) for remaining work.
 
 ## Build and run
 
@@ -79,8 +90,12 @@ cargo test
 cargo build --release
 ```
 
-The test suite includes request validation, cURL conversion, response formatting, and
-a local HTTP integration test.
+Formatting and strict Clippy checks pass, along with 77 headless unit tests and one
+allocation regression test. Coverage includes application state, JSON editing, request
+validation, cURL conversion, response handling, local HTTP integration, and
+transactional SQLite storage. One GTK widget-lifetime test is excluded from the
+default headless suite; see [development checks](docs/development.md#verification)
+for running it with a display.
 
 ## Collection storage
 

@@ -18,10 +18,11 @@ Then run:
 cargo run
 ```
 
-The first implementation slice supports GET, POST, PUT, PATCH, DELETE, and HEAD;
+The current implementation supports GET, POST, PUT, PATCH, DELETE, and HEAD;
 ordered enabled headers; None and JSON bodies; URL, header, and JSON validation;
 30-second request timeouts; cancellation; redirects disabled; and a response view
-with status, elapsed time, byte size, headers, and a bounded 5 MiB body preview. The
+with headers and a bounded 5 MiB body preview. Validation and transport failures use
+transient overlay toasts instead of a permanent response status label. The
 menu attached to Send can copy the current request as cURL or populate the editor
 from a pasted cURL command. The current parser supports the six Pakpos methods,
 repeated literal headers, inline JSON bodies, and multipart text/file fields without
@@ -33,14 +34,24 @@ Response handling classifies JSON, text, HTML source, attachments, and binary da
 Supported text charsets are decoded with visible replacement/unsupported-charset
 notices. Attachments, binary bodies, and text exceeding the 5 MiB preview limit are
 streamed through collision-safe partial files into the OS-configured Downloads
-directory. Collections and JSON editor assistance remain in the next product
-milestones described in `PRODUCT.md`.
+directory. Flat SQLite collections and JSON editor assistance are implemented;
+Postman import/export remains planned in
+[`PRODUCT.md`](../PRODUCT.md#implementation-progress).
+
+The JSON editor uses two-space indentation and completes `{}` and `[]` outside JSON
+strings. Enter retains indentation, expands empty pairs, and adds one level after an
+opening bracket. Typed generated closers are skipped, Backspace removes an untouched
+generated pair, and whitespace-only closing lines align with their matching opener.
+Tab and Shift+Tab indent or outdent the current line or selected lines. Assisted edits
+are grouped for native undo/redo; programmatic loads and cURL imports preserve their
+source text and reset the undo baseline.
 
 The collection milestone uses one application-managed embedded SQLite
 database in the platform user-data directory. Native persistence and Postman v2.1
-conversion are separate layers: collection metadata and the selected request can be
-loaded on demand from SQLite, while Postman JSON is read or written only for explicit
-import and export. Database and file operations must stay off the GTK main thread.
+conversion are separate layers: collection metadata and the selected request are
+loaded on demand from SQLite. Planned Postman conversion will read or write JSON
+only for explicit import and export. Database and file operations stay off the GTK
+main thread.
 The native schema and flat-collection UI are implemented. Collections contain
 requests directly without folders; Postman conversion remains. See
 [`storage.md`](storage.md) for the approved layout, transaction, initialization, and
@@ -57,6 +68,14 @@ temporarily incomplete URLs or JSON while the user types. Sending moves a copy i
 the request worker, where `net::execute` validates it once before any network work.
 No separate draft or snapshot model is maintained.
 
+Collection state shares immutable `Arc<Request>` payloads with saved baselines and
+in-flight save snapshots. Clean inactive details are evicted; pending edits remain
+until saved. Allocation regression coverage checks bookkeeping, validation, cURL
+export, and plain response display with a 2 MiB payload. See the
+[allocation audit](memory-allocation-audit.md) for measurements and remaining costs.
+
+## Verification
+
 Run the non-UI verification with:
 
 ```sh
@@ -64,3 +83,17 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
+
+On 2026-09-19, these checks passed: 77 headless unit tests and one allocation
+regression test passed. Local HTTP integration tests require permission to bind
+loopback sockets. The default suite skips the GTK widget-lifetime test, which can
+be run in a desktop session with:
+
+```sh
+cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1
+```
+
+That test checks removed/replaced rows, closed menus, and no-op autosave flag
+consumption. It does not replace a full manual accessibility or responsiveness pass.
+Current release RSS scenarios, large-collection storage measurements, and actual
+Postman interoperability checks remain outstanding.
