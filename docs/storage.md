@@ -1,7 +1,8 @@
 # Native collection storage design
 
-Status: Native schema, persistence operations, and the first flat-collection UI
-slice are implemented. Nested folder UI and Postman conversion remain pending.
+Status: Native schema, persistence operations, and the flat-collection UI are
+implemented. Collections contain requests directly; folders are not supported.
+Postman conversion remains pending.
 
 Pakpos uses one embedded SQLite database as its native working store. Postman
 Collection v2.1 JSON is supported through explicit import and export and is not the
@@ -38,14 +39,14 @@ may be refined during implementation without changing the product behavior.
 | Record | Required data |
 | --- | --- |
 | Collection | Stable ID, name, timestamps, preserved Postman collection metadata |
-| Node | Stable ID, collection ID, optional parent-folder ID, folder/request kind, name, sibling position, preserved item metadata |
-| Request | Node ID, method, URL, body mode, JSON source text, preserved Postman request/body metadata |
+| Request metadata | Stable ID, collection ID, name, list position, preserved item metadata |
+| Request details | Request ID, method, URL, body mode, JSON source text, preserved Postman request/body metadata |
 | Header | Request ID, position, enabled state, name, value, preserved Postman header metadata |
 | Multipart field | Request ID, position, enabled state, field name, text/file kind, text value or resolved file path, source path context, preserved Postman field metadata |
 
 Use persisted UUIDs or identifiers with equivalent collision resistance. Names are
-display values and are never keys. Enforce parent/child integrity, collection
-ownership, node kind, and ordered-row uniqueness with database constraints where
+display values and are never keys. Enforce collection ownership, request-detail integrity,
+and ordered-row uniqueness with database constraints where
 practical. Deleting a collection or request must remove its dependent native rows
 in the same transaction after the required user confirmation.
 
@@ -59,13 +60,13 @@ Native persistence is not an in-memory mirror of the complete database:
 
 1. Application startup opens and validates the database and lists collection
    metadata only.
-2. Opening a collection loads the folder/request node tree required by the sidebar.
+2. Opening a collection loads the flat request metadata list required by the sidebar.
 3. Selecting a request loads that request, its headers, body, and multipart fields.
 4. Switching requests captures current editor changes before releasing the previous
    request's detailed state.
 5. Responses and downloads never enter the collection store.
 
-Keep the currently open tree and active editor state in memory. Do not cache every
+Keep the currently open request list and active editor state in memory. Do not cache every
 request body merely because its name appears in the sidebar. Prepared statements
 and SQLite's bounded page cache are acceptable; unbounded application caches are not.
 
@@ -92,16 +93,16 @@ and busy-timeout settings deliberately and test multiple Pakpos processes access
 the same store; the application currently permits non-unique processes. Report lock
 contention as an actionable error rather than blocking the interface indefinitely.
 
-## Schema versions and recovery
+## Schema initialization and recovery
 
-Track a schema version in SQLite and apply ordered migrations transactionally before
-normal access. Tests must cover a new database, every supported upgrade path, and a
-forced failure midway through a migration.
+Pakpos is unpublished. Define the current flat schema directly and create its tables
+and indexes in one transaction. Do not maintain schema versions, upgrade paths, or
+backward compatibility with earlier development databases. Recreate an outdated
+local development database when the schema changes.
 
-Never delete or recreate a database automatically because it is newer than the
-application, unreadable, corrupt, or fails migration. Leave the original in place,
-open no writable collection session, and report its full path with recovery guidance.
-Do not include request values or secrets in diagnostic logs.
+Opening a database with the current schema must preserve its saved data. Never
+silently delete or recreate an unreadable or corrupt database. Report initialization
+errors without logging request values or secrets.
 
 Backup and whole-database restore UI are outside the initial release. Users can
 export individual collections to Postman v2.1 JSON for portable interchange, but the
@@ -141,11 +142,11 @@ release.
 
 Persistence tests must use temporary databases and cover transactions, constraints,
 ordering, duplicate names, disabled/repeated fields, deletion, restart persistence,
-lock errors, and migrations. Postman conversion tests remain independent of SQLite
+lock errors, and schema initialization. Postman conversion tests remain independent of SQLite
 tests and must include unsupported-field preservation and multipart path rebasing.
 
-Before release, measure collection listing with 100 collections and tree loading,
+Before release, measure collection listing with 100 collections and request-list loading,
 request selection, and one-request autosave with a 1,000-request collection. Record query
 counts, elapsed time, and peak RSS on the reference environment. Verify that listing
-collections and opening a tree do not load unrelated request bodies and that saving
+collections and opening a request list do not load unrelated request bodies and that saving
 one request does not rewrite them.

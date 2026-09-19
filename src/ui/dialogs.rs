@@ -60,21 +60,32 @@ pub(super) fn show_create_collection_dialog(
     dialog.set_default_widget(Some(&create));
 
     name.connect_changed({
-        let create = create.clone();
-        move |name| create.set_sensitive(!name.text().trim().is_empty())
+        let create = create.downgrade();
+        move |name| {
+            if let Some(create) = create.upgrade() {
+                create.set_sensitive(!name.text().trim().is_empty());
+            }
+        }
     });
     cancel.connect_clicked({
-        let dialog = dialog.clone();
-        move |_| dialog.close()
+        let dialog = dialog.downgrade();
+        move |_| {
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
+            }
+        }
     });
     create.connect_clicked({
         let state = state.clone();
         let sidebar = sidebar.clone();
         let editor = editor.clone();
         let response_summary = response_summary.clone();
-        let dialog = dialog.clone();
-        let name = name.clone();
+        let dialog = dialog.downgrade();
+        let name = name.downgrade();
         move |_| {
+            let (Some(dialog), Some(name)) = (dialog.upgrade(), name.upgrade()) else {
+                return;
+            };
             let collection_name = name.text().trim().to_owned();
             if collection_name.is_empty() {
                 return;
@@ -82,7 +93,7 @@ pub(super) fn show_create_collection_dialog(
             dialog.close();
             let collection = CollectionSummary::new(collection_name);
             let update = state.update(Action::CreateCollection(collection));
-            let Some(effect) = update.effects.into_iter().next() else {
+            let Some(effect) = update.effect else {
                 return;
             };
             show_message(&response_summary, "Creating collection…");
@@ -175,8 +186,11 @@ pub(super) fn show_rename_request_dialog(
         let state = state.clone();
         let sidebar = sidebar.clone();
         let editor = editor.clone();
-        let name = name.clone();
+        let name = name.downgrade();
         move || {
+            let Some(name) = name.upgrade() else {
+                return;
+            };
             let new_name = name.text().trim().to_owned();
             if new_name.is_empty() {
                 return;
@@ -201,10 +215,12 @@ pub(super) fn show_rename_request_dialog(
     name.add_controller(rename_focus);
     done.connect_clicked({
         let commit_rename = commit_rename.clone();
-        let dialog = dialog.clone();
+        let dialog = dialog.downgrade();
         move |_| {
             commit_rename();
-            dialog.close();
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
+            }
         }
     });
     dialog.connect_close_request({

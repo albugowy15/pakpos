@@ -26,7 +26,6 @@ fn saves_lists_and_loads_a_request() {
     let collection = collection("Payments");
     let request = CollectionRequest::new(
         collection.id,
-        None,
         "Create payment",
         0,
         request("https://example.com/payments"),
@@ -42,9 +41,9 @@ fn saves_lists_and_loads_a_request() {
         .unwrap();
 
     assert_eq!(store.list_collections().unwrap(), vec![collection.clone()]);
-    let tree = store.load_tree(collection.id).unwrap();
-    assert_eq!(tree, vec![request.node.clone()]);
-    assert_eq!(tree[0].method, Some(HttpMethod::Post));
+    let items = store.list_requests(collection.id).unwrap();
+    assert_eq!(items, vec![request.node.clone()]);
+    assert_eq!(items[0].method, Some(HttpMethod::Post));
     assert_eq!(store.load_request(request.node.id).unwrap(), request);
 }
 
@@ -83,8 +82,8 @@ fn creates_personal_collection_when_no_collections_exist() {
 fn saves_multipart_paths_and_order_losslessly() {
     let mut store = CollectionStore::open_in_memory().unwrap();
     let collection = collection("Uploads");
-    let mut request = CollectionRequest::new(collection.id, None, "Upload", 0, Request::default());
-    request.request.body = RequestBody::Multipart(vec![
+    let mut request = CollectionRequest::new(collection.id, "Upload", 0, Request::default());
+    std::sync::Arc::make_mut(&mut request.request).body = RequestBody::Multipart(vec![
         MultipartField::text("tag", "one"),
         MultipartField {
             enabled: false,
@@ -114,8 +113,9 @@ fn saves_non_utf8_linux_file_paths_losslessly() {
     let path = PathBuf::from(std::ffi::OsString::from_vec(vec![
         b'/', b't', b'm', b'p', b'/', 0xff, b'.', b'd', b'a', b't',
     ]));
-    let mut request = CollectionRequest::new(collection.id, None, "Upload", 0, Request::default());
-    request.request.body = RequestBody::Multipart(vec![MultipartField::file("asset", path)]);
+    let mut request = CollectionRequest::new(collection.id, "Upload", 0, Request::default());
+    std::sync::Arc::make_mut(&mut request.request).body =
+        RequestBody::Multipart(vec![MultipartField::file("asset", path)]);
 
     store
         .save_collection(
@@ -129,12 +129,11 @@ fn saves_non_utf8_linux_file_paths_losslessly() {
 }
 
 #[test]
-fn tree_loading_does_not_deserialize_request_details() {
+fn request_listing_does_not_deserialize_request_details() {
     let mut store = CollectionStore::open_in_memory().unwrap();
     let collection = collection("Lazy");
     let request = CollectionRequest::new(
         collection.id,
-        None,
         "Deferred body",
         0,
         request("https://example.com"),
@@ -165,7 +164,7 @@ fn tree_loading_does_not_deserialize_request_details() {
         .unwrap();
 
     assert_eq!(
-        store.load_tree(collection.id).unwrap(),
+        store.list_requests(collection.id).unwrap(),
         vec![request.node.clone()]
     );
     assert!(matches!(
@@ -180,14 +179,12 @@ fn updating_one_request_does_not_rewrite_another() {
     let collection = collection("API");
     let mut first = CollectionRequest::new(
         collection.id,
-        None,
         "First",
         0,
         request("https://example.com/first"),
     );
     let second = CollectionRequest::new(
         collection.id,
-        None,
         "Second",
         1,
         request("https://example.com/second"),
@@ -208,7 +205,7 @@ fn updating_one_request_does_not_rewrite_another() {
         )
         .unwrap();
 
-    first.request.url = "https://example.com/changed".to_owned();
+    std::sync::Arc::make_mut(&mut first.request).url = "https://example.com/changed".to_owned();
     store
         .save_collection(&collection, &[], std::slice::from_ref(&first), &[])
         .unwrap();
@@ -231,7 +228,6 @@ fn renaming_a_request_updates_only_its_node() {
     let collection = collection("API");
     let request = CollectionRequest::new(
         collection.id,
-        None,
         "Before",
         0,
         request("https://example.com/request"),
@@ -276,22 +272,12 @@ fn renaming_a_request_updates_only_its_node() {
 fn failed_save_rolls_back_all_changes() {
     let mut store = CollectionStore::open_in_memory().unwrap();
     let collection = collection("Rollback");
-    let request = CollectionRequest::new(
-        collection.id,
-        Some(Uuid::new_v4()),
-        "Orphan",
-        0,
-        Request::default(),
-    );
+    let request = CollectionRequest::new(collection.id, "Orphan", 0, Request::default());
+    // The details reference a missing metadata row, failing after the collection insert.
 
     assert!(
         store
-            .save_collection(
-                &collection,
-                std::slice::from_ref(&request.node),
-                std::slice::from_ref(&request),
-                &[],
-            )
+            .save_collection(&collection, &[], std::slice::from_ref(&request), &[])
             .is_err()
     );
     assert!(store.list_collections().unwrap().is_empty());
@@ -303,7 +289,6 @@ fn deletion_cascades_to_request_details() {
     let collection = collection("Delete");
     let request = CollectionRequest::new(
         collection.id,
-        None,
         "Temporary",
         0,
         request("https://example.com"),
@@ -320,7 +305,7 @@ fn deletion_cascades_to_request_details() {
         .save_collection(&collection, &[], &[], &[request.node.id])
         .unwrap();
 
-    assert!(store.load_tree(collection.id).unwrap().is_empty());
+    assert!(store.list_requests(collection.id).unwrap().is_empty());
     assert!(matches!(
         store.load_request(request.node.id),
         Err(StorageError::RequestNotFound(_))
@@ -333,7 +318,6 @@ fn persists_across_reopen() {
     let collection = collection("Persistent");
     let request = CollectionRequest::new(
         collection.id,
-        None,
         "Get status",
         0,
         request("https://example.com/status"),
@@ -358,58 +342,6 @@ fn persists_across_reopen() {
 }
 
 #[test]
-fn rejects_newer_schema_without_replacing_it() {
-    let connection = Connection::open_in_memory().unwrap();
-    connection.pragma_update(None, "user_version", 99).unwrap();
-    let mut store = CollectionStore { connection };
-    assert!(matches!(
-        store.migrate(),
-        Err(StorageError::UnsupportedSchema {
-            found: 99,
-            supported: SCHEMA_VERSION
-        })
-    ));
-    let version: i64 = store
-        .connection()
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 99);
-}
-
-#[test]
-fn migrates_existing_collections_to_store_the_last_opened_collection() {
-    let connection = Connection::open_in_memory().unwrap();
-    connection
-        .execute_batch(
-            "
-                CREATE TABLE collections (
-                    id TEXT PRIMARY KEY NOT NULL,
-                    name TEXT NOT NULL,
-                    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                    postman_extra TEXT
-                ) STRICT;
-                PRAGMA user_version = 1;
-            ",
-        )
-        .unwrap();
-    let mut store = CollectionStore { connection };
-
-    store.migrate().unwrap();
-    let version: i64 = store
-        .connection()
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, SCHEMA_VERSION);
-    assert!(
-        store
-            .connection()
-            .prepare("SELECT key, value FROM application_settings")
-            .is_ok()
-    );
-}
-
-#[test]
 fn managed_database_uses_private_linux_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -428,4 +360,46 @@ fn managed_database_uses_private_linux_permissions() {
         0o600
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn initializes_the_flat_schema_directly() {
+    let store = CollectionStore::open_in_memory().unwrap();
+    let mut columns = store
+        .connection()
+        .prepare("SELECT name FROM pragma_table_info('collection_nodes') ORDER BY cid")
+        .unwrap();
+    let columns = columns
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        columns,
+        ["id", "collection_id", "name", "position", "postman_extra"]
+    );
+    assert_eq!(store.most_recently_opened_collection().unwrap(), None);
+}
+
+#[test]
+fn failed_initialization_rolls_back_created_tables() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    // An existing table blocks creation of the ordering index midway through setup.
+    connection
+        .execute_batch("CREATE TABLE collection_nodes_order (id TEXT)")
+        .unwrap();
+    assert!(initialize(&mut connection).is_err());
+    let table_count: u32 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_count, 1);
+    connection
+        .execute_batch("DROP TABLE collection_nodes_order")
+        .unwrap();
+    initialize(&mut connection).unwrap();
+    initialize(&mut connection).unwrap();
 }

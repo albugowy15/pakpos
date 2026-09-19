@@ -64,14 +64,14 @@ impl ResponseData {
         )
     }
 
-    pub fn display_body(&self) -> String {
+    pub fn display_body(&self) -> Cow<'_, str> {
         match &self.body {
-            ResponseBody::Empty => "This response has no body.".to_owned(),
+            ResponseBody::Empty => Cow::Borrowed("This response has no body."),
             ResponseBody::Downloaded { path } => {
-                format!("Saved the response to:\n{}", path.display())
+                Cow::Owned(format!("Saved the response to:\n{}", path.display()))
             }
             ResponseBody::DownloadFailed { reason } => {
-                format!("The response could not be saved: {reason}")
+                Cow::Owned(format!("The response could not be saved: {reason}"))
             }
             ResponseBody::Text {
                 text,
@@ -82,37 +82,37 @@ impl ResponseData {
             } => {
                 let mut displayed = if *kind == ResponseTextKind::Json && !truncated {
                     match serde_json::from_str::<serde_json::Value>(text) {
-                        Ok(value) => {
-                            serde_json::to_string_pretty(&value).unwrap_or_else(|_| text.clone())
-                        }
+                        Ok(value) => serde_json::to_string_pretty(&value)
+                            .map(Cow::Owned)
+                            .unwrap_or(Cow::Borrowed(text.as_str())),
                         Err(error) => {
                             let mut raw = text.clone();
                             append_notice(&mut raw, &format!("Invalid JSON: {error}"));
-                            raw
+                            Cow::Owned(raw)
                         }
                     }
                 } else {
-                    text.clone()
+                    Cow::Borrowed(text.as_str())
                 };
 
                 if *truncated {
-                    append_notice(&mut displayed, "Preview stopped at 5 MiB");
+                    append_notice(displayed.to_mut(), "Preview stopped at 5 MiB");
                 }
                 if let Some(path) = saved_path {
                     append_notice(
-                        &mut displayed,
+                        displayed.to_mut(),
                         &format!("Full response saved to {}", path.display()),
                     );
                 }
                 for notice in notices {
-                    append_notice(&mut displayed, notice);
+                    append_notice(displayed.to_mut(), notice);
                 }
                 displayed
             }
         }
     }
 
-    pub fn display_raw_body(&self) -> Option<String> {
+    pub fn display_raw_body(&self) -> Option<Cow<'_, str>> {
         let ResponseBody::Text {
             text,
             kind: ResponseTextKind::Json,
@@ -124,28 +124,33 @@ impl ResponseData {
             return None;
         };
 
-        let mut displayed = text.clone();
+        let mut displayed = Cow::Borrowed(text.as_str());
         if *truncated {
-            append_notice(&mut displayed, "Preview stopped at 5 MiB");
+            append_notice(displayed.to_mut(), "Preview stopped at 5 MiB");
         }
         if let Some(path) = saved_path {
             append_notice(
-                &mut displayed,
+                displayed.to_mut(),
                 &format!("Full response saved to {}", path.display()),
             );
         }
         for notice in notices {
-            append_notice(&mut displayed, notice);
+            append_notice(displayed.to_mut(), notice);
         }
         Some(displayed)
     }
 
     pub fn display_headers(&self) -> String {
-        self.headers
-            .iter()
-            .map(|header| format!("{}: {}", header.name, header.value))
-            .collect::<Vec<_>>()
-            .join("\n")
+        let mut text = String::new();
+        for header in &self.headers {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&header.name);
+            text.push_str(": ");
+            text.push_str(&header.value);
+        }
+        text
     }
 }
 
@@ -272,13 +277,10 @@ impl ResponseBodyCollector {
             if self.partial.is_none()
                 && self.download_error.is_none()
                 && self.start_download().is_ok()
+                && let Some(partial) = self.partial.as_mut()
+                && let Err(error) = partial.write_all(&self.prefix)
             {
-                let prefix = self.prefix.clone();
-                if let Some(partial) = self.partial.as_mut()
-                    && let Err(error) = partial.write_all(&prefix)
-                {
-                    self.fail_download(error);
-                }
+                self.fail_download(error);
             }
             return match self.finalize_download() {
                 Ok(path) => ResponseBody::Downloaded { path },
@@ -295,7 +297,23 @@ impl ResponseBodyCollector {
             }
         };
         let source_was_truncated = self.body_size > self.prefix.len() as u64;
-        let decoded = decode_text(&self.prefix, self.charset.as_deref(), source_was_truncated);
+        let decoded = if !source_was_truncated
+            && self.prefix.len() <= RESPONSE_PREVIEW_LIMIT
+            && self.charset.as_deref().is_none_or(|charset| {
+                let charset = charset.trim().trim_matches(['"', '\'']);
+                charset.eq_ignore_ascii_case("utf-8") || charset.eq_ignore_ascii_case("utf8")
+            })
+            && std::str::from_utf8(&self.prefix).is_ok()
+        {
+            DecodedText {
+                text: String::from_utf8(std::mem::take(&mut self.prefix))
+                    .expect("UTF-8 checked above"),
+                truncated: false,
+                notices: Vec::new(),
+            }
+        } else {
+            decode_text(&self.prefix, self.charset.as_deref(), source_was_truncated)
+        };
         let needs_full_download = source_was_truncated || decoded.truncated;
         let mut saved_path = None;
 
@@ -303,13 +321,10 @@ impl ResponseBodyCollector {
             if self.partial.is_none()
                 && self.download_error.is_none()
                 && self.start_download().is_ok()
+                && let Some(partial) = self.partial.as_mut()
+                && let Err(error) = partial.write_all(&self.prefix)
             {
-                let prefix = self.prefix.clone();
-                if let Some(partial) = self.partial.as_mut()
-                    && let Err(error) = partial.write_all(&prefix)
-                {
-                    self.fail_download(error);
-                }
+                self.fail_download(error);
             }
             if self.download_error.is_none() {
                 match self.finalize_download() {
@@ -395,7 +410,9 @@ fn classify(media_type: Option<&str>, content_disposition: Option<&str>) -> Body
         return BodyClassification::Unknown;
     };
     if media_type.eq_ignore_ascii_case("application/json")
-        || media_type.to_ascii_lowercase().ends_with("+json")
+        || media_type
+            .get(media_type.len().saturating_sub(5)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case("+json"))
     {
         BodyClassification::Text(ResponseTextKind::Json)
     } else if media_type.eq_ignore_ascii_case("text/html")
@@ -439,24 +456,22 @@ fn parameter(value: &str, wanted: &str) -> Option<String> {
 }
 
 fn split_parameters(value: &str) -> impl Iterator<Item = &str> {
-    let mut parts = Vec::new();
     let mut quoted = false;
     let mut escaped = false;
-    let mut start = 0;
-    for (index, character) in value.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if quoted && character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        } else if character == ';' && !quoted {
-            parts.push(&value[start..index]);
-            start = index + 1;
-        }
-    }
-    parts.push(&value[start..]);
-    parts.into_iter().skip(1)
+    value
+        .split(move |character| {
+            if escaped {
+                escaped = false;
+            } else if quoted && character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = !quoted;
+            } else if character == ';' && !quoted {
+                return true;
+            }
+            false
+        })
+        .skip(1)
 }
 
 fn unescape_quoted(value: &str) -> String {
@@ -697,7 +712,8 @@ fn filename_with_suffix(filename: &str, suffix: usize) -> Cow<'_, str> {
 
 #[derive(Default)]
 struct Utf8Probe {
-    carry: Vec<u8>,
+    carry: [u8; 4],
+    carry_len: usize,
     valid: bool,
     initialized: bool,
     has_binary_control: bool,
@@ -717,32 +733,35 @@ impl Utf8Probe {
         }
 
         let mut input = bytes;
-        if !self.carry.is_empty() {
-            let needed = utf8_sequence_length(self.carry[0]).saturating_sub(self.carry.len());
+        if self.carry_len != 0 {
+            let needed = utf8_sequence_length(self.carry[0]).saturating_sub(self.carry_len);
             let taken = needed.min(input.len());
-            self.carry.extend_from_slice(&input[..taken]);
+            self.carry[self.carry_len..self.carry_len + taken].copy_from_slice(&input[..taken]);
+            self.carry_len += taken;
             input = &input[taken..];
-            if self.carry.len() < utf8_sequence_length(self.carry[0]) {
+            if self.carry_len < utf8_sequence_length(self.carry[0]) {
                 return;
             }
-            if std::str::from_utf8(&self.carry).is_err() {
+            if std::str::from_utf8(&self.carry[..self.carry_len]).is_err() {
                 self.valid = false;
                 return;
             }
-            self.carry.clear();
+            self.carry_len = 0;
         }
 
         if let Err(error) = std::str::from_utf8(input) {
             if error.error_len().is_some() {
                 self.valid = false;
             } else {
-                self.carry.extend_from_slice(&input[error.valid_up_to()..]);
+                let remaining = &input[error.valid_up_to()..];
+                self.carry[..remaining.len()].copy_from_slice(remaining);
+                self.carry_len = remaining.len();
             }
         }
     }
 
     fn is_text(&self) -> bool {
-        self.valid && self.carry.is_empty() && !self.has_binary_control
+        self.valid && self.carry_len == 0 && !self.has_binary_control
     }
 }
 
@@ -1002,6 +1021,49 @@ mod tests {
             &Url::parse("https://example.com/files/fallback.dat").unwrap(),
             Ok(directory.to_path_buf()),
         )
+    }
+
+    #[test]
+    fn complete_utf8_reuses_the_collected_buffer_and_display_borrows_it() {
+        let directory = test_directory();
+        let mut collector = collector(Some("text/plain; charset=UTF-8"), None, &directory);
+        collector.push("hello 🌍".as_bytes());
+        let pointer = collector.prefix.as_ptr();
+        let body = collector.finish();
+        let ResponseBody::Text { text, .. } = &body else {
+            panic!("text expected");
+        };
+        assert_eq!(pointer, text.as_ptr());
+        let response = ResponseData {
+            status: 200,
+            reason: "OK".into(),
+            elapsed: Default::default(),
+            body_size: text.len() as u64,
+            headers: Vec::new(),
+            body,
+        };
+        assert!(matches!(response.display_body(), Cow::Borrowed("hello 🌍")));
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn utf8_probe_handles_every_split_of_multibyte_characters() {
+        let bytes = "a¢€🌍z".as_bytes();
+        for split in 0..=bytes.len() {
+            let mut probe = Utf8Probe::default();
+            probe.push(&bytes[..split]);
+            probe.push(&bytes[split..]);
+            assert!(probe.is_text(), "split {split}");
+        }
+        let mut probe = Utf8Probe::default();
+        for byte in bytes {
+            probe.push(std::slice::from_ref(byte));
+        }
+        assert!(probe.is_text());
+        let mut probe = Utf8Probe::default();
+        probe.push(&[0xf0]);
+        probe.push(&[0x80, 0x80, 0x80]);
+        assert!(!probe.is_text());
     }
 
     #[test]

@@ -24,15 +24,19 @@ mod editor;
 mod flow;
 mod sidebar;
 
+#[cfg(test)]
+mod tests;
+
 use self::editor::{
-    AutosaveTrigger, EditorWidgets, apply_request, autosave_on_blur, build_body_page,
-    build_headers_page, collect_request, readonly_text_view, request_autosave, scrolled,
+    AutosaveTrigger, apply_request, autosave_on_blur, build_body_page, build_headers_page,
+    collect_request, readonly_text_view, request_autosave, scrolled,
 };
 use self::flow::{autosave_current_collection, capture_active_request, collection_is_dirty};
 use self::sidebar::{build_sidebar, setup_collection_actions};
 
-#[derive(Clone)]
-struct SidebarWidgets {
+type SidebarWidgets = Rc<SidebarWidgetHandles>;
+
+struct SidebarWidgetHandles {
     root: GtkBox,
     collection_picker: DropDown,
     collection_choices: Rc<RefCell<Vec<CollectionSummary>>>,
@@ -73,9 +77,7 @@ pub fn build(application: &Application) {
         .default_height(700)
         .build();
 
-    let title = Label::builder().label("Pakpos").build();
-    title.add_css_class("title");
-    let header_bar = HeaderBar::builder().title_widget(&title).build();
+    let header_bar = HeaderBar::builder().build();
     window.set_titlebar(Some(&header_bar));
 
     let root = Paned::builder()
@@ -174,13 +176,13 @@ pub fn build(application: &Application) {
     window.set_child(Some(&root));
 
     let state = Rc::new(RequestState::default());
-    let editor_widgets = EditorWidgets {
+    let editor_widgets = Rc::new(editor::EditorWidgetHandles {
         method: method.clone(),
         url: url.clone(),
         headers_box: headers_box.clone(),
         header_rows: header_rows.clone(),
         body: body.clone(),
-    };
+    });
     setup_collection_actions(
         application,
         &window,
@@ -194,8 +196,8 @@ pub fn build(application: &Application) {
         let url = url.clone();
         let body = body.clone();
         let header_rows = header_rows.clone();
-        let send_group = send_group.clone();
-        let cancel = cancel.clone();
+        let send_group = send_group.downgrade();
+        let cancel = cancel.downgrade();
         let response_summary = response_summary.clone();
         let response_body = response_body.clone();
         let response_raw = response_raw.clone();
@@ -204,6 +206,9 @@ pub fn build(application: &Application) {
         let state = state.clone();
 
         move || {
+            let (Some(send_group), Some(cancel)) = (send_group.upgrade(), cancel.upgrade()) else {
+                return;
+            };
             if state.active_request_id.get().is_some() {
                 return;
             }
@@ -217,7 +222,7 @@ pub fn build(application: &Application) {
             };
 
             let update = state.update(Action::SendRequest(request));
-            let Some(effect) = update.effects.into_iter().next() else {
+            let Some(effect) = update.effect else {
                 return;
             };
             set_request_running(&send_group, &cancel, true);
@@ -263,7 +268,7 @@ pub fn build(application: &Application) {
     cancel.connect_clicked({
         let state = state.clone();
         move |_| {
-            for effect in state.update(Action::CancelRequest).effects {
+            if let Some(effect) = state.update(Action::CancelRequest).effect {
                 state.effects.run(effect, |_| {});
             }
         }
@@ -281,7 +286,7 @@ pub fn build(application: &Application) {
         move |_, _| {
             let result = collect_request(&method, &url, &header_rows, &body).and_then(|request| {
                 let AppEvent::CurlExported(result) =
-                    state.update(Action::ExportCurl(request)).event
+                    state.update(Action::ExportCurl(request.into())).event
                 else {
                     return Err("Could not export the current request.".to_owned());
                 };
@@ -323,7 +328,7 @@ pub fn build(application: &Application) {
                             AppEvent::CurlImported(Ok(import)) => {
                                 state.applying_editor.set(true);
                                 apply_request(
-                                    import.request,
+                                    &import.request,
                                     &method,
                                     &url,
                                     &headers_box,
@@ -368,11 +373,10 @@ pub fn build(application: &Application) {
 
     window.connect_close_request({
         let state = state.clone();
-        let window = window.clone();
         let sidebar = sidebar.clone();
         let editor = editor_widgets.clone();
         let collection_status = sidebar.status.clone();
-        move |_| {
+        move |window| {
             if state.allow_close.get() {
                 cancel_active_request(&state);
                 return glib::Propagation::Proceed;
@@ -385,7 +389,7 @@ pub fn build(application: &Application) {
             }
             state.update(Action::CloseRequested);
             if !state.collection_busy.get() {
-                autosave_current_collection(&state, &sidebar, &editor, &collection_status, &window);
+                autosave_current_collection(&state, &sidebar, &editor, &collection_status, window);
             }
             glib::Propagation::Stop
         }
@@ -401,7 +405,7 @@ fn set_request_running(send_group: &GtkBox, cancel: &Button, running: bool) {
 }
 
 fn cancel_active_request(state: &Rc<RequestState>) {
-    for effect in state.update(Action::CancelRequest).effects {
+    if let Some(effect) = state.update(Action::CancelRequest).effect {
         state.effects.run(effect, |_| {});
     }
 }

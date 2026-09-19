@@ -1,4 +1,7 @@
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+};
 
 use crate::{
     app::{CollectionChanges, CollectionSession, Effect, RemoveRequestResult},
@@ -42,7 +45,7 @@ pub enum Action {
     AddCollectionRequest,
     DuplicateCollectionRequest {
         source_node: CollectionNode,
-        request: Request,
+        request: Arc<Request>,
     },
     RenameCollectionRequest {
         id: Uuid,
@@ -60,7 +63,7 @@ pub enum Action {
     SaveCollection(CollectionChanges),
     CollectionOperationCompleted,
     ImportCurl(String),
-    ExportCurl(Request),
+    ExportCurl(Arc<Request>),
     DeferAfterSave(DeferredAction),
     TakeDeferredAfterSave,
     CloseRequested,
@@ -71,7 +74,7 @@ pub enum Action {
 #[derive(Debug, Default)]
 pub struct Update {
     pub accepted: bool,
-    pub effects: Vec<Effect>,
+    pub effect: Option<Effect>,
     pub event: AppEvent,
 }
 
@@ -104,7 +107,7 @@ impl AppState {
                 self.active_request_id.set(Some(id));
                 Update {
                     accepted: true,
-                    effects: vec![Effect::ExecuteRequest { id, request }],
+                    effect: Some(Effect::ExecuteRequest { id, request }),
                     event: AppEvent::None,
                 }
             }
@@ -114,7 +117,7 @@ impl AppState {
                 };
                 Update {
                     accepted: true,
-                    effects: vec![Effect::CancelRequest { id }],
+                    effect: Some(Effect::CancelRequest { id }),
                     event: AppEvent::None,
                 }
             }
@@ -125,7 +128,7 @@ impl AppState {
                 self.active_request_id.set(None);
                 Update {
                     accepted: true,
-                    effects: Vec::new(),
+                    effect: None,
                     event: AppEvent::None,
                 }
             }
@@ -271,7 +274,7 @@ impl AppState {
         }
         Update {
             accepted: true,
-            effects: vec![effect],
+            effect: Some(effect),
             event: AppEvent::None,
         }
     }
@@ -280,7 +283,7 @@ impl AppState {
 fn accepted(event: AppEvent) -> Update {
     Update {
         accepted: true,
-        effects: Vec::new(),
+        effect: None,
         event,
     }
 }
@@ -294,7 +297,7 @@ mod tests {
         let state = AppState::default();
         let first = state.update(Action::SendRequest(Request::default()));
         assert!(first.accepted);
-        let Effect::ExecuteRequest { id, .. } = &first.effects[0] else {
+        let Effect::ExecuteRequest { id, .. } = first.effect.as_ref().unwrap() else {
             panic!("expected request effect");
         };
         let id = *id;
@@ -321,7 +324,7 @@ mod tests {
         let update = state.update(Action::CancelRequest);
 
         assert!(update.accepted);
-        assert!(matches!(update.effects[0], Effect::CancelRequest { .. }));
+        assert!(matches!(update.effect, Some(Effect::CancelRequest { .. })));
         assert!(state.active_request_id.get().is_some());
     }
 

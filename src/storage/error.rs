@@ -5,10 +5,6 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub enum StorageError {
     MissingDataDirectory,
-    UnsupportedSchema {
-        found: i64,
-        supported: i64,
-    },
     RequestNotFound(Uuid),
     InvalidData {
         message: String,
@@ -25,10 +21,6 @@ impl fmt::Display for StorageError {
         match self {
             Self::MissingDataDirectory => formatter.write_str(
                 "Could not resolve the user data directory because HOME is unavailable.",
-            ),
-            Self::UnsupportedSchema { found, supported } => write!(
-                formatter,
-                "The collection database uses schema version {found}, but this Pakpos build supports up to version {supported}."
             ),
             Self::RequestNotFound(id) => write!(formatter, "Saved request {id} was not found."),
             Self::InvalidData { message } => {

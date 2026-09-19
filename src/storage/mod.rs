@@ -10,14 +10,34 @@ use std::{
 };
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
 use uuid::Uuid;
 
 use crate::{
-    collections::{CollectionNode, CollectionNodeKind, CollectionRequest, CollectionSummary},
+    collections::{CollectionNode, CollectionRequest, CollectionSummary},
     models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody},
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// SQLite keeps UUIDs as text; bind a stack-encoded value without a temporary String.
+struct SqlId([u8; 36]);
+
+impl SqlId {
+    fn new(id: Uuid) -> Self {
+        let mut bytes = [0; 36];
+        id.hyphenated().encode_lower(&mut bytes);
+        Self(bytes)
+    }
+}
+
+impl rusqlite::ToSql for SqlId {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(rusqlite::types::ToSqlOutput::Borrowed(
+            rusqlite::types::ValueRef::Text(&self.0),
+        ))
+    }
+}
 
 pub struct CollectionStore {
     connection: Connection,
@@ -67,7 +87,7 @@ impl CollectionStore {
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(StorageError::Database)?;
 
-        migrate(&mut connection)?;
+        initialize(&mut connection)?;
         Ok(Self { connection })
     }
 
@@ -76,7 +96,7 @@ impl CollectionStore {
         connection
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(StorageError::Database)?;
-        migrate(&mut connection)?;
+        initialize(&mut connection)?;
         Ok(Self { connection })
     }
 
@@ -135,7 +155,7 @@ impl CollectionStore {
                  FROM collections
                  WHERE id = ?1
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [collection_id.to_string()],
+                [SqlId::new(collection_id)],
             )
             .map_err(StorageError::Database)?;
         if changed == 0 {
@@ -146,38 +166,33 @@ impl CollectionStore {
         Ok(())
     }
 
-    pub fn load_tree(&self, collection_id: Uuid) -> Result<Vec<CollectionNode>, StorageError> {
+    pub fn list_requests(&self, collection_id: Uuid) -> Result<Vec<CollectionNode>, StorageError> {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT n.id, n.parent_id, n.kind, n.name, n.position, r.method
+                "SELECT n.id, n.name, n.position, r.method
                  FROM collection_nodes AS n
                  LEFT JOIN requests AS r ON r.node_id = n.id
                  WHERE n.collection_id = ?1
-                 ORDER BY n.parent_id, n.position, n.id",
+                 ORDER BY n.position, n.id",
             )
             .map_err(StorageError::Database)?;
         let rows = statement
-            .query_map([collection_id.to_string()], |row| {
+            .query_map([SqlId::new(collection_id)], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, u32>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             })
             .map_err(StorageError::Database)?;
 
         rows.map(|row| {
-            let (id, parent_id, kind, name, position, method) =
-                row.map_err(StorageError::Database)?;
+            let (id, name, position, method) = row.map_err(StorageError::Database)?;
             Ok(CollectionNode {
                 id: parse_uuid(&id)?,
                 collection_id,
-                parent_id: parent_id.as_deref().map(parse_uuid).transpose()?,
-                kind: parse_node_kind(&kind)?,
                 name,
                 position,
                 method: method.as_deref().map(parse_http_method).transpose()?,
@@ -190,23 +205,21 @@ impl CollectionStore {
         let request = self
             .connection
             .query_row(
-                "SELECT n.collection_id, n.parent_id, n.kind, n.name, n.position,
+                "SELECT n.collection_id, n.name, n.position,
                         r.method, r.url, r.body_mode, r.json_body
                  FROM collection_nodes n
                  JOIN requests r ON r.node_id = n.id
                  WHERE n.id = ?1",
-                [request_id.to_string()],
+                [SqlId::new(request_id)],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, u32>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, u32>(4)?,
+                        row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 },
             )
@@ -214,14 +227,7 @@ impl CollectionStore {
             .map_err(StorageError::Database)?
             .ok_or(StorageError::RequestNotFound(request_id))?;
 
-        let (collection_id, parent_id, kind, name, position, method, url, body_mode, json) =
-            request;
-        let kind = parse_node_kind(&kind)?;
-        if kind != CollectionNodeKind::Request {
-            return Err(StorageError::InvalidData {
-                message: format!("node {request_id} is not a request"),
-            });
-        }
+        let (collection_id, name, position, method, url, body_mode, json) = request;
 
         let mut header_statement = self
             .connection
@@ -231,7 +237,7 @@ impl CollectionStore {
             )
             .map_err(StorageError::Database)?;
         let headers = header_statement
-            .query_map([request_id.to_string()], |row| {
+            .query_map([SqlId::new(request_id)], |row| {
                 Ok(HeaderRow {
                     enabled: row.get(0)?,
                     name: row.get(1)?,
@@ -258,8 +264,6 @@ impl CollectionStore {
             node: CollectionNode {
                 id: request_id,
                 collection_id: parse_uuid(&collection_id)?,
-                parent_id: parent_id.as_deref().map(parse_uuid).transpose()?,
-                kind,
                 name,
                 position,
                 method: Some(method),
@@ -269,7 +273,8 @@ impl CollectionStore {
                 url,
                 headers,
                 body,
-            },
+            }
+            .into(),
         })
     }
 
@@ -282,7 +287,7 @@ impl CollectionStore {
             )
             .map_err(StorageError::Database)?;
         let rows = statement
-            .query_map([request_id.to_string()], |row| {
+            .query_map([SqlId::new(request_id)], |row| {
                 Ok((
                     row.get::<_, bool>(0)?,
                     row.get::<_, String>(1)?,
@@ -336,7 +341,7 @@ impl CollectionStore {
             .execute(
                 "INSERT INTO collections (id, name) VALUES (?1, ?2)
                  ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = unixepoch()",
-                params![collection.id.to_string(), collection.name],
+                params![SqlId::new(collection.id), collection.name],
             )
             .map_err(StorageError::Database)?;
 
@@ -344,7 +349,7 @@ impl CollectionStore {
             transaction
                 .execute(
                     "DELETE FROM collection_nodes WHERE id = ?1 AND collection_id = ?2",
-                    params![node_id.to_string(), collection.id.to_string()],
+                    params![SqlId::new(*node_id), SqlId::new(collection.id)],
                 )
                 .map_err(StorageError::Database)?;
         }
@@ -361,7 +366,7 @@ impl CollectionStore {
         self.connection
             .execute(
                 "DELETE FROM collections WHERE id = ?1",
-                [collection_id.to_string()],
+                [SqlId::new(collection_id)],
             )
             .map(|changed| changed != 0)
             .map_err(StorageError::Database)
@@ -383,11 +388,6 @@ impl CollectionStore {
     #[cfg(test)]
     fn connection(&self) -> &Connection {
         &self.connection
-    }
-
-    #[cfg(test)]
-    fn migrate(&mut self) -> Result<(), StorageError> {
-        migrate(&mut self.connection)
     }
 }
 
@@ -429,9 +429,7 @@ fn validate_changes(
         }
     }
     for request in requests {
-        if request.node.collection_id != collection.id
-            || request.node.kind != CollectionNodeKind::Request
-        {
+        if request.node.collection_id != collection.id {
             return Err(StorageError::InvalidData {
                 message: format!(
                     "request {} does not belong to this collection",
@@ -452,19 +450,15 @@ fn save_node(transaction: &Transaction<'_>, node: &CollectionNode) -> Result<(),
     transaction
         .execute(
             "INSERT INTO collection_nodes
-                (id, collection_id, parent_id, kind, name, position)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                (id, collection_id, name, position)
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET
                 collection_id = excluded.collection_id,
-                parent_id = excluded.parent_id,
-                kind = excluded.kind,
                 name = excluded.name,
                 position = excluded.position",
             params![
-                node.id.to_string(),
-                node.collection_id.to_string(),
-                node.parent_id.map(|id| id.to_string()),
-                node_kind_text(node.kind),
+                SqlId::new(node.id),
+                SqlId::new(node.collection_id),
                 node.name,
                 node.position,
             ],
@@ -492,7 +486,7 @@ fn save_request(
                 body_mode = excluded.body_mode,
                 json_body = excluded.json_body",
             params![
-                request.node.id.to_string(),
+                SqlId::new(request.node.id),
                 request.request.method.as_str(),
                 request.request.url,
                 body_mode,
@@ -501,7 +495,7 @@ fn save_request(
         )
         .map_err(StorageError::Database)?;
 
-    let request_id = request.node.id.to_string();
+    let request_id = SqlId::new(request.node.id);
     transaction
         .execute(
             "DELETE FROM request_headers WHERE request_id = ?1",
@@ -534,7 +528,7 @@ fn save_request(
     if let RequestBody::Multipart(fields) = &request.request.body {
         for (position, field) in fields.iter().enumerate() {
             let (kind, value) = match &field.value {
-                MultipartValue::Text(value) => ("text", value.as_bytes().to_vec()),
+                MultipartValue::Text(value) => ("text", value.as_bytes()),
                 MultipartValue::File(path) => ("file", path_to_bytes(path)),
             };
             transaction
@@ -557,23 +551,6 @@ fn save_request(
     Ok(())
 }
 
-const fn node_kind_text(kind: CollectionNodeKind) -> &'static str {
-    match kind {
-        CollectionNodeKind::Folder => "folder",
-        CollectionNodeKind::Request => "request",
-    }
-}
-
-fn parse_node_kind(value: &str) -> Result<CollectionNodeKind, StorageError> {
-    match value {
-        "folder" => Ok(CollectionNodeKind::Folder),
-        "request" => Ok(CollectionNodeKind::Request),
-        other => Err(StorageError::InvalidData {
-            message: format!("unknown collection node kind {other:?}"),
-        }),
-    }
-}
-
 fn parse_http_method(value: &str) -> Result<HttpMethod, StorageError> {
     HttpMethod::from_str(value).map_err(|error| StorageError::InvalidData {
         message: error.to_string(),
@@ -586,8 +563,8 @@ fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
     })
 }
 
-fn path_to_bytes(path: &Path) -> Vec<u8> {
-    path.as_os_str().as_bytes().to_vec()
+fn path_to_bytes(path: &Path) -> &[u8] {
+    path.as_os_str().as_bytes()
 }
 
 fn bytes_to_path(value: Vec<u8>) -> Result<PathBuf, StorageError> {
@@ -613,12 +590,10 @@ fn restrict_file(path: &Path) -> Result<(), StorageError> {
 }
 
 mod error;
-mod migrations;
+mod schema;
 
 pub use error::StorageError;
-#[cfg(test)]
-use migrations::SCHEMA_VERSION;
-use migrations::migrate;
+use schema::initialize;
 
 #[cfg(test)]
 mod tests;

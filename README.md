@@ -33,8 +33,8 @@ not retry requests.
 ## Status
 
 Pakpos is under active development. The current build supports scratch requests and
-the first native collection persistence slice. Nested folder editing and Postman
-collection import/export are not available yet.
+native persistence for flat collections of requests. Postman collection
+import/export is not available yet.
 
 | Area                                                           | Progress                                                    |
 | -------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -45,7 +45,7 @@ collection import/export are not available yet.
 | Response classification, downloads, and charset handling       | Available                                                   |
 | JSON editor indentation and bracket completion                 | Planned                                                     |
 | SQLite-backed local collection persistence                     | Available for flat request collections                      |
-| Nested folders and Postman v2.1 import/export                  | Planned                                                     |
+| Postman v2.1 import/export                  | Planned                                                     |
 | Full memory, accessibility, and interoperability verification  | In progress                                                 |
 
 ## Build and run

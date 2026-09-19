@@ -76,7 +76,7 @@ async fn execute_inner(
         .redirect(Policy::none())
         .build()
         .map_err(RequestError::Transport)?;
-    let mut headers = HeaderMap::new();
+    let mut headers = HeaderMap::with_capacity(request.headers.len());
     let has_content_type = request
         .headers
         .iter()
@@ -114,11 +114,10 @@ async fn execute_inner(
                 form = match field.value {
                     MultipartValue::Text(value) => form.text(field.name, value),
                     MultipartValue::File(path) => {
-                        let display_path = path.display().to_string();
                         let part = Part::file(&path)
                             .await
                             .map_err(|error| RequestError::File {
-                                path: display_path,
+                                path: path.display().to_string(),
                                 reason: error.to_string(),
                             })?;
                         form.part(field.name, part)
@@ -143,11 +142,11 @@ async fn execute_inner(
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
-        .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned());
+        .map(|value| String::from_utf8_lossy(value.as_bytes()));
     let content_disposition = response
         .headers()
         .get(reqwest::header::CONTENT_DISPOSITION)
-        .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned());
+        .map(|value| String::from_utf8_lossy(value.as_bytes()));
     let mut body = ResponseBodyCollector::new(
         content_type.as_deref(),
         content_disposition.as_deref(),
