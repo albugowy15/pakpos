@@ -2,10 +2,12 @@ use std::{cell::RefCell, rc::Rc};
 
 use gtk::{
     Align, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry,
-    EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, TextView, gio, glib,
-    prelude::*,
+    EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, TextBuffer,
+    TextView, gio, glib, prelude::*,
 };
 use pakpos::models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody};
+
+use super::json_editor::{self, JsonEditorState};
 
 pub(super) type AutosaveTrigger = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
@@ -30,6 +32,7 @@ pub(super) struct MultipartWidgets {
 pub(super) struct BodyWidgets {
     pub(super) mode: DropDown,
     pub(super) json_editor: TextView,
+    pub(super) json_editor_state: Rc<JsonEditorState>,
     pub(super) multipart_box: GtkBox,
     pub(super) multipart_rows: Rc<RefCell<Vec<MultipartWidgets>>>,
     pub(super) autosave: AutosaveTrigger,
@@ -177,7 +180,10 @@ pub(super) fn build_body_page(
         .build();
     let mode = DropDown::from_strings(&["None", "JSON", "Multipart"]);
     mode.set_halign(Align::Start);
+    let editor_buffer = TextBuffer::builder().enable_undo(true).build();
+    editor_buffer.set_max_undo_levels(100);
     let editor = TextView::builder()
+        .buffer(&editor_buffer)
         .monospace(true)
         .wrap_mode(gtk::WrapMode::None)
         .top_margin(8)
@@ -185,6 +191,7 @@ pub(super) fn build_body_page(
         .left_margin(8)
         .right_margin(8)
         .build();
+    let json_editor_state = json_editor::configure(&editor);
     let editor_scroll = scrolled(&editor);
     autosave_on_blur(&editor, autosave);
     editor_scroll.set_min_content_height(150);
@@ -239,6 +246,7 @@ pub(super) fn build_body_page(
         BodyWidgets {
             mode,
             json_editor: editor,
+            json_editor_state,
             multipart_box,
             multipart_rows,
             autosave: autosave.clone(),
@@ -467,17 +475,29 @@ pub(super) fn apply_request(
     match &request.body {
         RequestBody::None => {
             body_widgets.mode.set_selected(0);
-            body_widgets.json_editor.buffer().set_text("");
+            json_editor::set_text(
+                &body_widgets.json_editor,
+                &body_widgets.json_editor_state,
+                "",
+            );
             reset_multipart_rows(body_widgets, &[]);
         }
         RequestBody::Json(body) => {
             body_widgets.mode.set_selected(1);
-            body_widgets.json_editor.buffer().set_text(body);
+            json_editor::set_text(
+                &body_widgets.json_editor,
+                &body_widgets.json_editor_state,
+                body,
+            );
             reset_multipart_rows(body_widgets, &[]);
         }
         RequestBody::Multipart(fields) => {
             body_widgets.mode.set_selected(2);
-            body_widgets.json_editor.buffer().set_text("");
+            json_editor::set_text(
+                &body_widgets.json_editor,
+                &body_widgets.json_editor_state,
+                "",
+            );
             reset_multipart_rows(body_widgets, fields);
         }
     }

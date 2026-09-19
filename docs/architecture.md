@@ -39,6 +39,7 @@ than how a widget should look.
 - `sidebar.rs` builds and renders collection navigation.
 - `dialogs.rs` owns modal GTK interactions.
 - `flow.rs` dispatches actions/effects and applies their results to views.
+- `toast.rs` presents transient, dismissible overlay notifications.
 
 The UI may retain GTK-only flags needed to suppress signal feedback while rendering.
 It must not open storage, execute HTTP requests, create Tokio runtimes, or spawn

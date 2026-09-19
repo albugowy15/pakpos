@@ -6,9 +6,9 @@ use std::{
 };
 
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry, HeaderBar,
-    Label, ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, ScrolledWindow,
-    Separator, TextView, gio, glib, prelude::*,
+    Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry, HeaderBar, Label,
+    ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, ScrolledWindow, TextView, gio,
+    glib, prelude::*,
 };
 use pakpos::{
     app::{Action, AppEvent, AppState, EffectOutput},
@@ -22,7 +22,9 @@ use crate::runtime::EffectRunner;
 mod dialogs;
 mod editor;
 mod flow;
+mod json_editor;
 mod sidebar;
+mod toast;
 
 #[cfg(test)]
 mod tests;
@@ -33,6 +35,7 @@ use self::editor::{
 };
 use self::flow::{autosave_current_collection, capture_active_request, collection_is_dirty};
 use self::sidebar::{build_sidebar, setup_collection_actions};
+use self::toast::Toast;
 
 type SidebarWidgets = Rc<SidebarWidgetHandles>;
 
@@ -91,13 +94,25 @@ pub fn build(application: &Application) {
     header_bar.pack_start(&sidebar.new_collection);
     root.set_start_child(Some(&sidebar.root));
 
-    let main = GtkBox::builder()
+    let main = Paned::builder()
         .orientation(Orientation::Vertical)
-        .spacing(12)
+        .position(320)
+        .shrink_start_child(false)
+        .shrink_end_child(false)
         .margin_top(12)
         .margin_bottom(12)
         .margin_start(12)
         .margin_end(12)
+        .build();
+    let request_panel = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(12)
+        .margin_bottom(6)
+        .build();
+    let response_panel = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(12)
+        .margin_top(6)
         .build();
 
     let request_row = GtkBox::builder()
@@ -140,23 +155,15 @@ pub fn build(application: &Application) {
     request_row.append(&url);
     request_row.append(&send_group);
     request_row.append(&cancel);
-    main.append(&request_row);
+    request_panel.append(&request_row);
 
     let request_notebook = Notebook::new();
+    request_notebook.set_vexpand(true);
     let (headers_page, headers_box, header_rows) = build_headers_page(&autosave);
     request_notebook.append_page(&headers_page, Some(&Label::new(Some("Headers"))));
     let (body_page, body) = build_body_page(&window, &autosave);
     request_notebook.append_page(&body_page, Some(&Label::new(Some("Body"))));
-    main.append(&request_notebook);
-    main.append(&Separator::new(Orientation::Horizontal));
-
-    let response_summary = Label::builder()
-        .label("Send a request to see its response.")
-        .halign(Align::Start)
-        .selectable(true)
-        .wrap(true)
-        .build();
-    main.append(&response_summary);
+    request_panel.append(&request_notebook);
 
     let response_notebook = Notebook::new();
     response_notebook.set_vexpand(true);
@@ -171,9 +178,12 @@ pub fn build(application: &Application) {
         &scrolled(&response_headers),
         Some(&Label::new(Some("Headers"))),
     );
-    main.append(&response_notebook);
+    response_panel.append(&response_notebook);
+    main.set_start_child(Some(&request_panel));
+    main.set_end_child(Some(&response_panel));
     root.set_end_child(Some(&main));
-    window.set_child(Some(&root));
+    let (overlay, toast) = Toast::overlay(&root);
+    window.set_child(Some(&overlay));
 
     let state = Rc::new(RequestState::default());
     let editor_widgets = Rc::new(editor::EditorWidgetHandles {
@@ -198,7 +208,7 @@ pub fn build(application: &Application) {
         let header_rows = header_rows.clone();
         let send_group = send_group.downgrade();
         let cancel = cancel.downgrade();
-        let response_summary = response_summary.clone();
+        let toast = toast.clone();
         let response_body = response_body.clone();
         let response_raw = response_raw.clone();
         let response_raw_page = response_raw_page.clone();
@@ -216,7 +226,7 @@ pub fn build(application: &Application) {
             let request = match collect_request(&method, &url, &header_rows, &body) {
                 Ok(request) => request,
                 Err(error) => {
-                    show_error(&response_summary, &error);
+                    toast.error(&error);
                     return;
                 }
             };
@@ -226,8 +236,6 @@ pub fn build(application: &Application) {
                 return;
             };
             set_request_running(&send_group, &cancel, true);
-            response_summary.remove_css_class("error");
-            response_summary.set_text("Sending request…");
             response_body.buffer().set_text("");
             response_raw.buffer().set_text("");
             response_raw_page.set_visible(false);
@@ -236,7 +244,7 @@ pub fn build(application: &Application) {
             let state = state.clone();
             let send_group = send_group.clone();
             let cancel = cancel.clone();
-            let response_summary = response_summary.clone();
+            let toast = toast.clone();
             let response_body = response_body.clone();
             let response_raw = response_raw.clone();
             let response_raw_page = response_raw_page.clone();
@@ -250,7 +258,7 @@ pub fn build(application: &Application) {
                     set_request_running(&send_group, &cancel, false);
                     display_result(
                         result,
-                        &response_summary,
+                        &toast,
                         &response_body,
                         &response_raw,
                         &response_raw_page,
@@ -281,7 +289,7 @@ pub fn build(application: &Application) {
         let header_rows = header_rows.clone();
         let body = body.clone();
         let state = state.clone();
-        let response_summary = response_summary.clone();
+        let toast = toast.clone();
         let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
         move |_, _| {
             let result = collect_request(&method, &url, &header_rows, &body).and_then(|request| {
@@ -295,9 +303,9 @@ pub fn build(application: &Application) {
             match result {
                 Ok(command) => {
                     clipboard.set_text(&command);
-                    show_message(&response_summary, "Copied the current request as cURL.");
+                    toast.message("Copied the current request as cURL.");
                 }
-                Err(error) => show_error(&response_summary, &error),
+                Err(error) => toast.error(&error),
             }
         }
     });
@@ -311,7 +319,7 @@ pub fn build(application: &Application) {
         let header_rows = header_rows.clone();
         let body = body.clone();
         let state = state.clone();
-        let response_summary = response_summary.clone();
+        let toast = toast.clone();
         let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
         move |_, _| {
             clipboard.read_text_async(None::<&gio::Cancellable>, {
@@ -321,7 +329,7 @@ pub fn build(application: &Application) {
                 let header_rows = header_rows.clone();
                 let body = body.clone();
                 let state = state.clone();
-                let response_summary = response_summary.clone();
+                let toast = toast.clone();
                 move |result| match result {
                     Ok(Some(text)) => {
                         match state.update(Action::ImportCurl(text.to_string())).event {
@@ -345,21 +353,14 @@ pub fn build(application: &Application) {
                                         import.warnings.join(" ")
                                     )
                                 };
-                                show_message(&response_summary, &message);
+                                toast.message(&message);
                             }
-                            AppEvent::CurlImported(Err(error)) => {
-                                show_error(&response_summary, &error)
-                            }
-                            _ => {
-                                show_error(&response_summary, "Could not import the cURL request.")
-                            }
+                            AppEvent::CurlImported(Err(error)) => toast.error(&error),
+                            _ => toast.error("Could not import the cURL request."),
                         }
                     }
-                    Ok(None) => show_error(&response_summary, "The clipboard has no text."),
-                    Err(error) => show_error(
-                        &response_summary,
-                        &format!("Could not read the clipboard: {error}"),
-                    ),
+                    Ok(None) => toast.error("The clipboard has no text."),
+                    Err(error) => toast.error(&format!("Could not read the clipboard: {error}")),
                 }
             });
         }
@@ -422,7 +423,7 @@ fn show_message(summary: &Label, message: &str) {
 
 fn display_result(
     result: Result<ResponseData, String>,
-    summary: &Label,
+    toast: &Toast,
     body: &TextView,
     raw: &TextView,
     raw_page: &ScrolledWindow,
@@ -430,8 +431,6 @@ fn display_result(
 ) {
     match result {
         Ok(response) => {
-            summary.remove_css_class("error");
-            summary.set_text(&response.summary());
             body.buffer().set_text(&response.display_body());
             if let Some(raw_body) = response.display_raw_body() {
                 raw.buffer().set_text(&raw_body);
@@ -443,7 +442,7 @@ fn display_result(
             headers.buffer().set_text(&response.display_headers());
         }
         Err(error) => {
-            show_error(summary, &error);
+            toast.error(&error);
             body.buffer().set_text("");
             raw.buffer().set_text("");
             raw_page.set_visible(false);
