@@ -1,0 +1,158 @@
+{
+  "info": {
+    "name": "Pakpos interoperability",
+    "description": "Exercises the supported Pakpos subset and ignored Postman-only behavior.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "ignored-collection-token",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "ignoredVariable",
+      "value": "ignored"
+    }
+  ],
+  "item": [
+    {
+      "name": "Nested folder",
+      "item": [
+        {
+          "name": "Send JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('ignored', function () {});"]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Trace",
+                "value": "first",
+                "type": "text"
+              },
+              {
+                "key": "X-Trace",
+                "value": "second",
+                "type": "text"
+              },
+              {
+                "key": "X-Trace",
+                "value": "disabled",
+                "type": "text",
+                "disabled": true
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer manual-token",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"message\":\"hello\",\"count\":2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "protocol": "http",
+              "host": ["127", "0", "0", "1:1"],
+              "path": ["echo", "json"],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "one"
+                },
+                {
+                  "key": "tag",
+                  "value": "two%20words"
+                },
+                {
+                  "key": "hidden",
+                  "value": "ignored",
+                  "disabled": true
+                }
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": []
+            }
+          }
+        },
+        {
+          "name": "Upload multipart",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "label",
+                  "value": "one",
+                  "type": "text"
+                },
+                {
+                  "key": "label",
+                  "value": "two",
+                  "type": "text"
+                },
+                {
+                  "key": "asset",
+                  "src": "assets/upload.txt",
+                  "type": "file"
+                },
+                {
+                  "key": "hidden",
+                  "value": "ignored",
+                  "type": "text",
+                  "disabled": true
+                }
+              ]
+            },
+            "url": "http://127.0.0.1:1/echo/upload"
+          }
+        },
+        {
+          "name": "Unsupported method",
+          "request": {
+            "method": "OPTIONS",
+            "url": "http://127.0.0.1:1/skipped"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Unsupported body becomes empty",
+      "request": {
+        "method": "GET",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "ignored",
+              "value": "ignored"
+            }
+          ]
+        },
+        "url": "http://127.0.0.1:1/echo/empty"
+      }
+    }
+  ]
+}

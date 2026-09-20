@@ -28,6 +28,11 @@ All notable changes to this project will be documented in this file.
   indentation, smart backspace, and native undo/redo while retaining Pakpos pair
   completion.
 
+### Testing
+
+- Add Postman v2.1 fixture import, official-schema validation, supported-field
+  round-trip, and local-server wire-equivalence coverage.
+
 ## [0.2.4] - 2026-03-10
 
 ### Ci

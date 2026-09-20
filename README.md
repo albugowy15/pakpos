@@ -38,10 +38,10 @@ not retry requests.
 
 ## Status
 
-Updated 2026-09-19. Pakpos supports scratch requests, assisted JSON editing, and
+Updated 2026-09-20. Pakpos supports scratch requests, assisted JSON editing, and
 native persistence for flat collections of requests and Postman v2.1 import/export.
-The initial release still requires interoperability, performance, and manual UI
-verification.
+The initial release still requires performance measurements and manual Postman and
+GTK verification.
 
 | Area | Progress |
 | --- | --- |
@@ -55,8 +55,9 @@ verification.
 | Allocation reductions and GTK ownership fixes | Implemented; audit and regression coverage added |
 | GtkSourceView JSON editor, indentation, bracket completion, and undo/redo | Available |
 | Postman v2.1 import/export | Available for supported request fields; folders flatten on import |
+| Automated Postman interoperability verification | Fixture import, official-schema validation, semantic round trip, and local-server wire checks pass |
 | Release memory and storage performance measurements | Partial evidence; full scenarios pending |
-| Accessibility and Postman interoperability verification | Pending |
+| Manual accessibility and Postman desktop verification | Pending |
 
 The [allocation audit](docs/memory-allocation-audit.md) records measured reductions
 and remaining costs. The [earlier idle RSS baseline](docs/memory-baseline.md) does
@@ -94,12 +95,13 @@ cargo test
 cargo build --release
 ```
 
-Formatting and strict Clippy checks pass, along with 82 headless unit tests and one
-allocation regression test. Coverage includes application state, JSON editing, request
-validation, cURL conversion, response handling, local HTTP integration, and
-transactional SQLite storage. One GTK widget-lifetime test is excluded from the
-default headless suite; see [development checks](docs/development.md#verification)
-for running it with a display.
+Formatting and strict Clippy checks pass, along with 83 headless unit tests, one
+allocation regression test, and three Postman interoperability tests. Coverage
+includes application state, JSON editing, request validation, cURL conversion,
+response handling, local HTTP integration, transactional SQLite storage, Postman
+schema validation, and supported-field round trips. One GTK widget-lifetime test is
+excluded from the default headless suite; see
+[development checks](docs/development.md#verification) for running it with a display.
 
 ## Collection storage
 

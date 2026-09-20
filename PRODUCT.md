@@ -2,7 +2,7 @@
 
 Status: Approved for implementation on 2026-09-07. The native SQLite storage
 direction was approved on 2026-09-09. Implementation is underway; progress below
-was updated on 2026-09-19.
+was updated on 2026-09-20.
 
 ## Implementation progress
 
@@ -27,16 +27,22 @@ strings and handles escaped quotes and backslashes. Tab and Shift+Tab also opera
 selected lines. Loading and cURL import preserve the supplied source and establish a
 fresh undo baseline.
 
+Postman interoperability coverage uses a representative v2.1 fixture and a vendored
+copy of the official schema. It verifies folder flattening, supported-field round
+trips, ignored Postman-only behavior, export schema validity, and equivalent JSON
+and multipart requests against a local HTTP server before and after export.
+
 Validation at this revision: formatting and strict all-target/all-feature Clippy
-passed; 82 headless unit tests and one allocation regression test passed. The default
-suite skips one display-dependent GTK widget-lifetime test; the allocation audit
-records a separate successful display run. This coverage does not complete all
-acceptance criteria below.
+passed; 83 headless unit tests, one allocation regression test, and three Postman
+interoperability tests passed. The default suite skips one display-dependent GTK
+widget-lifetime test; the allocation audit records a separate successful display
+run. This coverage does not complete all acceptance criteria below.
 
 Remaining initial-release work:
 
-- Add interoperability fixtures, schema validation, and actual Postman round-trip
-  checks against a local server.
+- Import a representative export into the Postman desktop application and verify
+  its requests against the local server; automated fixture, schema, and Pakpos
+  round-trip coverage is complete.
 - Measure current release-build peak and settled RSS for idle, everyday use,
   1 GiB transfers, and repeated requests. The historical idle baseline and Rust
   allocation measurements are partial evidence, not release-budget verification.

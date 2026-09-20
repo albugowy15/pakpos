@@ -153,30 +153,9 @@ impl EffectRunner {
             }
             Effect::ImportPostman(source) => run_background(
                 move || {
-                    let json = fs::read_to_string(&source)
-                        .map_err(|error| format!("Could not read {}: {error}", source.display()))?;
-                    let directory = source.parent().unwrap_or_else(|| Path::new("."));
-                    let imported = postman::import_collection(&json, directory)
-                        .map_err(|error| error.to_string())?;
-                    let nodes = imported
-                        .requests
-                        .iter()
-                        .map(|request| request.node.clone())
-                        .collect::<Vec<_>>();
-                    let first_request = imported.requests.first().cloned();
                     let mut store =
                         CollectionStore::open_default().map_err(|error| error.to_string())?;
-                    store
-                        .save_collection(&imported.summary, &nodes, &imported.requests, &[])
-                        .map_err(|error| error.to_string())?;
-                    store
-                        .mark_collection_opened(imported.summary.id)
-                        .map_err(|error| error.to_string())?;
-                    Ok(PostmanImport {
-                        collection: imported.summary,
-                        nodes,
-                        first_request,
-                    })
+                    import_postman_file(&source, &mut store)
                 },
                 move |result| complete(EffectOutput::PostmanImported(result)),
                 "The Postman import worker stopped unexpectedly.",
@@ -209,6 +188,34 @@ impl EffectRunner {
             }
         }
     }
+}
+
+fn import_postman_file(
+    source: &Path,
+    store: &mut CollectionStore,
+) -> Result<PostmanImport, String> {
+    let json = fs::read_to_string(source)
+        .map_err(|error| format!("Could not read {}: {error}", source.display()))?;
+    let directory = source.parent().unwrap_or_else(|| Path::new("."));
+    let imported =
+        postman::import_collection(&json, directory).map_err(|error| error.to_string())?;
+    let nodes = imported
+        .requests
+        .iter()
+        .map(|request| request.node.clone())
+        .collect::<Vec<_>>();
+    let first_request = imported.requests.first().cloned();
+    store
+        .save_collection(&imported.summary, &nodes, &imported.requests, &[])
+        .map_err(|error| error.to_string())?;
+    store
+        .mark_collection_opened(imported.summary.id)
+        .map_err(|error| error.to_string())?;
+    Ok(PostmanImport {
+        collection: imported.summary,
+        nodes,
+        first_request,
+    })
 }
 
 fn write_atomic(destination: &Path, contents: &[u8]) -> Result<(), String> {
@@ -261,4 +268,34 @@ fn run_background<T: Send + 'static>(
         }
         glib::ControlFlow::Break
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use pakpos::collections::CollectionSummary;
+
+    use super::*;
+
+    #[test]
+    fn malformed_postman_import_preserves_existing_storage() {
+        let mut store = CollectionStore::open_in_memory().unwrap();
+        let existing = CollectionSummary::new("Existing");
+        store.save_collection(&existing, &[], &[], &[]).unwrap();
+        let before = store.list_collections().unwrap();
+        let source = std::env::temp_dir().join(format!(
+            "pakpos-invalid-postman-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(
+            &source,
+            r#"{"info":{"name":"Invalid","schema":"v2.0"},"item":[]}"#,
+        )
+        .unwrap();
+
+        let result = import_postman_file(&source, &mut store);
+        fs::remove_file(source).unwrap();
+
+        assert!(result.is_err());
+        assert_eq!(store.list_collections().unwrap(), before);
+    }
 }
