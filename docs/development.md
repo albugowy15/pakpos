@@ -85,10 +85,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-On 2026-09-19, these checks passed: 82 headless unit tests and one allocation
-regression test passed. Local HTTP integration tests require permission to bind
-loopback sockets. The default suite skips the GTK widget-lifetime test, which can
-be run in a desktop session with:
+On 2026-09-20, these checks passed: 83 headless unit tests, one allocation regression
+test, and three Postman interoperability tests. The interoperability suite imports a
+representative fixture, validates exports against a vendored copy of the official
+v2.1 schema, checks supported-field round trips, and sends original and round-tripped
+JSON and multipart requests to a local server. Local HTTP integration tests require
+permission to bind loopback sockets. The default suite skips the GTK widget-lifetime
+test, which can be run in a desktop session with:
 
 ```sh
 cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1
@@ -96,5 +99,5 @@ cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1
 
 That test checks removed/replaced rows, closed menus, and no-op autosave flag
 consumption. It does not replace a full manual accessibility or responsiveness pass.
-Current release RSS scenarios, large-collection storage measurements, and actual
-Postman interoperability checks remain outstanding.
+Current release RSS scenarios, large-collection storage measurements, and manual
+import and execution in the Postman desktop application remain outstanding.
