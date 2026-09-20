@@ -21,8 +21,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install GTK4 development files
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev
+      - name: Install GTK development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libgtksourceview-5-dev pkg-config
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
