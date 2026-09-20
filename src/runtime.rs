@@ -1,3 +1,16 @@
+//! Imperative effect executor for the desktop binary.
+//!
+//! [`EffectRunner`] is the boundary between GTK-owned application state and
+//! external work. It starts HTTP, SQLite, and import/export work on OS threads,
+//! sends owned results through channels, and invokes completion callbacks on the
+//! GLib main thread. SQLite connections are opened inside their worker and never
+//! cross thread boundaries.
+//!
+//! HTTP workers create a current-thread Tokio runtime because Reqwest is async,
+//! while GTK continues to use GLib's independent event loop. Cancellation
+//! senders are indexed by application request ID so a UI cancellation reaches
+//! only the matching request.
+
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -75,6 +88,8 @@ impl EffectRunner {
                 "The collection worker stopped unexpectedly.",
             ),
             Effect::CreateCollection(collection) => {
+                // Share the value with the worker without cloning its strings;
+                // unwrap_or_clone recovers it cheaply once the worker is done.
                 let collection = Arc::new(collection);
                 let worker_collection = Arc::clone(&collection);
                 run_background(
@@ -218,6 +233,26 @@ fn import_postman_file(
     })
 }
 
+/// Writes a complete export without exposing a partially written destination.
+///
+/// The function creates a uniquely named temporary file beside `destination`,
+/// writes all bytes, synchronizes the file, and only then renames it over the
+/// destination. Keeping both paths in the same directory keeps them on the same
+/// filesystem, where the final Unix rename is atomic: another process observes
+/// either the previous destination or the complete new file, never an
+/// intermediate prefix.
+///
+/// `create_new` prevents following or replacing a pre-existing temporary path,
+/// while mode `0600` ensures newly exported request data is private to its owner.
+/// The inner closure exists so every fallible step can use `?` and still converge
+/// on the cleanup below. If creation, writing, synchronization, or renaming fails,
+/// the temporary file is removed on a best-effort basis and the original error is
+/// returned for display. An existing final destination is intentionally replaced
+/// only by the last rename step.
+///
+/// This synchronizes the temporary file itself but not its parent directory, so
+/// it protects readers from partial content rather than claiming full durability
+/// of the directory entry across sudden power loss.
 fn write_atomic(destination: &Path, contents: &[u8]) -> Result<(), String> {
     let directory = destination
         .parent()
@@ -247,6 +282,31 @@ fn write_atomic(destination: &Path, contents: &[u8]) -> Result<(), String> {
     result
 }
 
+/// Runs blocking or runtime-owned work off the GTK thread and completes on it.
+///
+/// `task` is moved onto a detached OS thread, which is why both the closure and
+/// its result `T` must be `Send + 'static`. The worker sends exactly one
+/// `Result<T, String>` through an MPSC channel. A GLib local timeout polls the
+/// receiver every 30 ms; because that timeout belongs to the GTK main context,
+/// `complete` always runs on the GTK thread and may safely update widgets. The
+/// completion closure itself therefore does not need to be `Send`.
+///
+/// GLib timeout callbacks may be invoked repeatedly and consequently implement
+/// `FnMut`, while callers provide a one-use `FnOnce` completion. Storing it in an
+/// `Option` and calling `take` bridges those contracts and also makes it explicit
+/// that completion can run at most once. Returning `ControlFlow::Break` removes
+/// the timer immediately after a result is delivered.
+///
+/// A worker panic or any other exit before `send` drops the channel sender. The
+/// receiver then reports `Disconnected`, which is translated into the supplied
+/// operation-specific message instead of leaving the UI waiting forever. A
+/// failed `send` is ignored because it only means the GTK-side receiver has
+/// already gone away, normally during window/application shutdown.
+///
+/// Tasks passed here must own all data they need and must not capture GTK objects
+/// or thread-bound SQLite connections. Cancellation is not implicit; operations
+/// that support it, currently HTTP execution, arrange their own cancellation
+/// channel before calling this helper.
 fn run_background<T: Send + 'static>(
     task: impl FnOnce() -> Result<T, String> + Send + 'static,
     complete: impl FnOnce(Result<T, String>) + 'static,

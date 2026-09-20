@@ -1,3 +1,16 @@
+//! Incremental response classification, decoding, display, and download storage.
+//!
+//! The internal `ResponseBodyCollector` consumes network chunks while enforcing the preview
+//! limit before a large string or JSON tree can be created. Text keeps a bounded
+//! decoded preview; attachments, binary data, and oversized bodies stream to a
+//! partial file and are finalized under a collision-free name. Only the current
+//! [`ResponseData`] is retained by the UI.
+//!
+//! Classification uses response headers first and a conservative incremental
+//! UTF-8/control-byte probe when no media type is supplied. Download filenames
+//! are sanitized, partial files are removed on failure or drop, and existing
+//! destination files are never overwritten.
+
 use std::{
     borrow::Cow,
     fs::{self, File, OpenOptions},
@@ -669,6 +682,8 @@ impl PartialDownload {
         for suffix in 0..10_000 {
             let filename = filename_with_suffix(&self.filename, suffix);
             let final_path = self.directory.join(filename.as_ref());
+            // A hard link fails atomically when the destination exists, avoiding
+            // the check-then-rename race that could overwrite another download.
             match fs::hard_link(partial_path, &final_path) {
                 Ok(()) => {
                     fs::remove_file(partial_path)?;

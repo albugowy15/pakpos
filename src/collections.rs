@@ -1,3 +1,14 @@
+//! Persistent collection domain values shared across application and storage.
+//!
+//! [`CollectionSummary`] identifies a collection, [`CollectionNode`] carries the
+//! lightweight metadata needed by the sidebar, and [`CollectionRequest`] pairs a
+//! node with lazily loaded request details. UUIDs, rather than display names or
+//! list positions, are the stable identities.
+//!
+//! `CollectionNode::method` is a read-side cache used for list rendering. It is
+//! intentionally excluded from equality because method changes belong to the
+//! request detail record, not node-metadata dirty tracking.
+
 use std::sync::Arc;
 
 use uuid::Uuid;

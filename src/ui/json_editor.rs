@@ -1,3 +1,15 @@
+//! JSON-specific editing assistance layered on GtkSourceView.
+//!
+//! Key events are converted into pure edit plans for bracket completion,
+//! generated-closer skipping, paired deletion, indentation, and closer alignment.
+//! Structural scanning understands JSON strings and escapes so punctuation inside
+//! a string is never treated as syntax. The planner is testable without GTK.
+//!
+//! Generated closing characters are tracked with moving [`TextMark`] values
+//! rather than byte offsets because GTK updates marks as surrounding text changes.
+//! Programmatic loads clear those marks and reset undo history so one request
+//! cannot undo into the previously selected request.
+
 use std::{cell::RefCell, rc::Rc};
 
 use gtk::{EventControllerKey, TextBuffer, TextMark, gdk, glib, prelude::*};

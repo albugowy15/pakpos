@@ -1,3 +1,16 @@
+//! Asynchronous HTTP execution adapter.
+//!
+//! This module validates editable [`Request`] values at the I/O boundary, maps
+//! them to Reqwest, and streams response chunks into the internal
+//! `ResponseBodyCollector`. Cancellation and the whole-transfer timeout race
+//! the request future, so neither connection setup nor a slow response can keep
+//! the operation alive indefinitely.
+//!
+//! The caller must drive these async functions on a Tokio runtime away from the
+//! GTK main thread. HTTP error status codes are valid responses; [`RequestError`]
+//! represents validation, cancellation, timeout, local-file, or transport
+//! failures instead.
+
 use std::{fmt, path::PathBuf, time::Instant};
 
 use reqwest::{
@@ -73,6 +86,8 @@ async fn execute_inner(
 ) -> Result<ResponseData, RequestError> {
     let request = request.validated().map_err(RequestError::Validation)?;
     let client = Client::builder()
+        // Redirects are presented to the user as received. Following them would
+        // hide an HTTP exchange and diverge from Pakpos's explicit request model.
         .redirect(Policy::none())
         .build()
         .map_err(RequestError::Transport)?;
@@ -155,6 +170,8 @@ async fn execute_inner(
     );
 
     let mut body_size = 0_u64;
+    // Feed chunks directly to the bounded collector instead of materializing a
+    // complete response body in memory.
     while let Some(chunk) = response.chunk().await.map_err(RequestError::Transport)? {
         body_size = body_size.saturating_add(chunk.len() as u64);
         body.push(&chunk);

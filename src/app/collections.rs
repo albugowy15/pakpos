@@ -1,3 +1,16 @@
+//! In-memory aggregate for the single open collection.
+//!
+//! A session loads request-list metadata eagerly but request details lazily. Each
+//! entry keeps current and last-saved values so it can build a minimal
+//! [`CollectionChanges`] snapshot, reconcile an older completed save, and retain
+//! edits made while that save was in flight. Request details use immutable
+//! [`Arc`] values to share large bodies without copying them.
+//!
+//! Clean inactive details are evicted to bound memory; dirty inactive details are
+//! retained until a save succeeds. This module contains no GTK or persistence
+//! code—the UI captures values into it and the storage adapter consumes its
+//! change snapshots.
+
 use std::{collections::HashMap, sync::Arc};
 
 use uuid::Uuid;
@@ -202,6 +215,8 @@ impl CollectionSession {
         else {
             return false;
         };
+        // The load may finish after a local rename. Refresh saved metadata, but
+        // never overwrite a newer node edit with the older database value.
         if !request.node_is_dirty() {
             request.node = loaded.node.clone();
         }
@@ -342,6 +357,8 @@ impl CollectionSession {
         self.saved_summary = Some(saved.summary.clone());
         self.deleted_nodes
             .retain(|id| !saved.deleted_nodes.contains(id));
+        // Reconcile against the exact snapshot that completed. Current values
+        // are deliberately untouched, so edits made during the save stay dirty.
         for request in &mut self.requests {
             if let Some(saved_node) = saved_nodes.get(&request.node.id) {
                 request.saved_node = Some((*saved_node).clone());

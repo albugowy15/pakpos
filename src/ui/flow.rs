@@ -1,3 +1,15 @@
+//! Multi-step collection and request workflows.
+//!
+//! These functions coordinate GTK widgets, [`AppState`](pakpos::app::AppState),
+//! and runtime effects for autosave, navigation, lazy request loading,
+//! duplication, deletion, and Postman import/export. The module owns sequencing,
+//! not domain rules or I/O implementations.
+//!
+//! Transitions that could replace editor state use [`DeferredAction`]: capture
+//! the active editor, save any dirty snapshot, reconcile the exact completion,
+//! and only then navigate or import/export. Save failures retain edits and cancel
+//! the deferred transition.
+
 use std::{rc::Rc, sync::Arc};
 
 use gtk::{ApplicationWindow, Label, gdk, glib, prelude::*};
@@ -578,6 +590,8 @@ fn queue_request_button_render(
     let state = state.clone();
     let sidebar = sidebar.clone();
     let editor = editor.clone();
+    // Rebuilding a list from inside one of its row signal handlers can re-enter
+    // GTK selection machinery. Queue the render after the current signal returns.
     glib::idle_add_local_once(move || render_request_buttons(&state, &sidebar, &editor));
 }
 
@@ -625,6 +639,8 @@ pub(super) fn apply_loaded_request(
         .as_ref()
         .and_then(|session| session.shared_request(request_id));
     if let Some(request) = request {
+        // Applying saved data emits widget change signals. Mark it as rendering
+        // so those signals do not schedule a redundant save of unchanged data.
         state.applying_editor.set(true);
         apply_request(
             &request,

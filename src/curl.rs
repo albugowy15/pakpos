@@ -1,3 +1,15 @@
+//! Safe conversion between Pakpos requests and a supported cURL command subset.
+//!
+//! Export emits shell-quoted text suitable for copying to a terminal. Import uses
+//! `shell_words` only as a lexer: it never invokes a shell or executes pasted
+//! input. Options are accepted only when their behavior maps faithfully to the
+//! native [`Request`] model; unsafe or unrepresentable options produce an error,
+//! while harmless presentation differences may produce warnings.
+//!
+//! Keep this module a pure converter. Clipboard access belongs to the UI, file
+//! access belongs to request validation/runtime work, and HTTP behavior belongs
+//! to the network adapter.
+
 use std::{
     borrow::{Borrow, Cow},
     fmt,
@@ -84,6 +96,8 @@ pub fn to_command(request: impl Borrow<Request>) -> Result<String, CurlError> {
 
 pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
     let normalized = remove_line_continuations(command);
+    // Tokenization reproduces shell quoting rules without giving pasted text an
+    // opportunity to execute substitutions, redirects, or arbitrary programs.
     let mut arguments = shell_words::split(&normalized).map_err(|error| {
         CurlError::new(format!("The cURL command has invalid quoting: {error}."))
     })?;
@@ -245,6 +259,8 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
         headers,
         body,
     };
+    // Imported file references may no longer exist on this machine. Preserve
+    // them for user reselection and defer filesystem validation until sending.
     request
         .check(false)
         .map_err(|error| CurlError::new(error.to_string()))?;

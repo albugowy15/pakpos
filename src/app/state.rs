@@ -1,3 +1,14 @@
+//! Application state machine and action reducer.
+//!
+//! [`AppState::update`] is the synchronous policy boundary used by GTK callbacks.
+//! It accepts or rejects an [`Action`], mutates only in-memory state, and returns
+//! an [`Update`] containing an immediate [`AppEvent`] and at most one external
+//! [`Effect`]. The runtime is responsible for executing that effect.
+//!
+//! HTTP requests and collection operations have separate serialization guards:
+//! one active request ID rejects stale network completions, while
+//! `collection_busy` prevents saves, loads, imports, and exports from racing.
+
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -110,6 +121,8 @@ impl AppState {
                 if self.active_request_id.get().is_some() {
                     return Update::default();
                 }
+                // IDs correlate asynchronous completions; wrapping avoids a
+                // theoretical debug overflow, and only one ID can be live.
                 let id = self.next_request_id.get().wrapping_add(1);
                 self.next_request_id.set(id);
                 self.active_request_id.set(Some(id));
@@ -287,6 +300,8 @@ impl AppState {
     }
 
     fn begin_collection_effect(&self, effect: Effect) -> Update {
+        // `replace` acts as a main-thread test-and-set. Keeping the guard in the
+        // reducer makes every UI entry point obey the same serialization rule.
         if self.collection_busy.replace(true) {
             return Update::default();
         }

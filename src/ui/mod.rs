@@ -1,3 +1,16 @@
+//! GTK composition and top-level presentation adapter.
+//!
+//! [`build`] constructs the application window, owns widget handles, translates
+//! user signals into application [`Action`] values, runs emitted effects through
+//! [`EffectRunner`], and renders typed completions back into widgets. It does not
+//! execute HTTP or SQLite work directly.
+//!
+//! [`RequestState`] combines the headless [`AppState`] with UI-only coordination
+//! flags. Those flags suppress feedback while controls are updated
+//! programmatically; user-originated changes still flow through the normal
+//! capture and autosave paths. Submodules split editor construction, navigation
+//! workflows, sidebar behavior, dialogs, JSON assistance, and toast presentation.
+
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -57,6 +70,8 @@ struct RequestState {
     app: AppState,
     effects: Rc<EffectRunner>,
     allow_close: Cell<bool>,
+    // GTK emits the same signals for programmatic and user changes. These guards
+    // prevent rendering state from recursively triggering navigation/autosave.
     syncing_collection_picker: Cell<bool>,
     syncing_request_list: Cell<bool>,
     applying_editor: Cell<bool>,

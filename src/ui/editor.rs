@@ -1,3 +1,14 @@
+//! Request-editor widgets and domain-value translation.
+//!
+//! Builders in this module create header, JSON, and multipart controls. The
+//! paired [`collect_request`] and [`apply_request`] functions are the only broad
+//! conversion boundary between widgets and the native [`Request`] model, keeping
+//! persistence and networking independent of GTK.
+//!
+//! Discrete changes request autosave immediately; free-form fields request it on
+//! focus loss. Dynamic row vectors mirror their GTK containers so collection is
+//! deterministic and preserves row order, duplicate headers, and disabled rows.
+
 use std::{cell::RefCell, rc::Rc};
 
 use gtk::{
@@ -62,6 +73,8 @@ pub(super) fn autosave_on_blur<W: IsA<gtk::Widget>>(widget: &W, autosave: &Autos
         let autosave = autosave.clone();
         move |_| {
             let autosave = autosave.clone();
+            // Defer until GTK finishes transferring focus; immediate capture can
+            // observe a widget midway through its focus-out signal sequence.
             glib::idle_add_local_once(move || request_autosave(&autosave));
         }
     });
