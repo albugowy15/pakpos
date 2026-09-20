@@ -1,3 +1,10 @@
+//! Persistence contract tests.
+//!
+//! Each test uses an isolated in-memory or temporary SQLite database to exercise
+//! transactions, lazy reads, cascading deletes, restart persistence, private
+//! file modes, and lossless Linux path storage. These tests intentionally call
+//! the repository API rather than duplicating its SQL assumptions.
+
 use super::*;
 
 fn collection(name: &str) -> CollectionSummary {

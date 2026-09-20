@@ -1,3 +1,14 @@
+//! Collection picker, searchable request list, and request context actions.
+//!
+//! The sidebar renders lightweight [`CollectionNode`](pakpos::collections::CollectionNode)
+//! metadata and keeps a UUID-to-row index so lazy detail loads can update a method
+//! badge without rebuilding the full list. Selection changes delegate to
+//! [`super::flow`], which protects dirty editor state and performs lazy loading.
+//!
+//! Signal handlers generally capture weak widget/state references to avoid GTK
+//! ownership cycles. Context popovers are built on demand and explicitly
+//! unparented after closing so temporary menu widget graphs can be released.
+
 use std::{cell::RefCell, rc::Rc};
 
 use gtk::{
@@ -541,6 +552,8 @@ pub(super) fn build_request_context_menu(
 
     popover.connect_closed(|popover| {
         let popover = popover.clone();
+        // GTK requires the popover to stay parented during the `closed` signal;
+        // detach it on the next main-loop turn so the transient graph can drop.
         glib::idle_add_local_once(move || popover.unparent());
     });
     popover

@@ -1,3 +1,16 @@
+//! Postman Collection v2.1 interoperability.
+//!
+//! The importer reads `serde_json::Value` because Pakpos intentionally supports
+//! only a narrow subset of Postman's much larger schema. Folders are flattened,
+//! unsupported methods are skipped, unsupported body modes become empty bodies,
+//! and Postman-only scripts, variables, authentication, and saved responses are
+//! discarded. The result is always the native flat collection model.
+//!
+//! Export performs the inverse supported mapping and rebases multipart file
+//! paths relative to the destination when possible. Structural checks here keep
+//! production lightweight; the integration suite validates exports against the
+//! vendored official schema.
+
 use std::{fmt, path::Path, str::FromStr};
 
 use serde_json::{Map, Value, json};
@@ -110,6 +123,8 @@ fn flatten_items(
     source_directory: &Path,
     imported: &mut ImportedCollection,
 ) -> Result<(), PostmanError> {
+    // Folder identity has no native representation. Depth-first traversal keeps
+    // Postman's visible request order while producing one flat request list.
     for item in items {
         let Some(item) = item.as_object() else {
             continue;

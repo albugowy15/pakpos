@@ -1,3 +1,9 @@
+//! Pakpos desktop executable and composition root.
+//!
+//! The binary owns the two GTK-aware layers that are intentionally absent from
+//! the library crate: [`ui`] builds the window and translates widget events,
+//! while [`runtime`] executes application effects away from GTK's main thread.
+
 mod runtime;
 mod ui;
 

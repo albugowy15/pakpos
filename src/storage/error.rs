@@ -1,3 +1,10 @@
+//! Storage error taxonomy and user-facing formatting.
+//!
+//! Errors distinguish missing platform directories, absent requests, invalid
+//! persisted data, filesystem failures, and SQLite failures. Messages identify
+//! the failed resource without including stored URLs, headers, or bodies, which
+//! may contain secrets.
+
 use std::{fmt, path::PathBuf};
 
 use uuid::Uuid;

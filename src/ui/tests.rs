@@ -1,3 +1,10 @@
+//! GTK integration and widget-lifetime tests.
+//!
+//! Pure UI planning is tested in its owning modules. Tests here cover behavior
+//! that requires real GTK objects, including theme selection and release of
+//! transient widget graphs. Display-dependent coverage stays ignored in the
+//! default headless suite and documents the command needed to run it manually.
+
 use super::*;
 use editor::{EditorWidgetHandles, add_header_row, add_multipart_row, json_style_scheme_id};
 use pakpos::{app::CollectionSession, models::Request};

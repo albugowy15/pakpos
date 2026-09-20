@@ -1,3 +1,17 @@
+//! SQLite persistence adapter for collections and requests.
+//!
+//! [`CollectionStore`] owns one connection and exposes collection-level
+//! operations rather than table-specific repositories. A save validates
+//! ownership and commits its collection, node, request, header, multipart, and
+//! deletion changes in one transaction, so callers never observe partial state.
+//!
+//! Normal reads are deliberately lazy: collection lists return summaries,
+//! request lists return nodes plus method metadata, and full request details are
+//! loaded only when selected. Complete collection snapshots are reserved for
+//! explicit interchange export. File-backed stores enable foreign keys, use a
+//! bounded busy timeout, and restrict managed paths because persisted requests
+//! may contain credentials.
+
 use std::{
     env, fs,
     os::unix::{
@@ -284,6 +298,10 @@ impl CollectionStore {
         &self,
         collection_id: Uuid,
     ) -> Result<(CollectionSummary, Vec<CollectionRequest>), StorageError> {
+        // A read transaction gives export one point-in-time view even if another
+        // Pakpos process writes between the metadata and detail queries.
+        // `unchecked_transaction` is needed because these read helpers take
+        // `&self`; all calls still use this same connection and transaction.
         let transaction = self
             .connection
             .unchecked_transaction()
@@ -369,6 +387,8 @@ impl CollectionStore {
         deleted_nodes: &[Uuid],
     ) -> Result<(), StorageError> {
         validate_changes(collection, changed_nodes, changed_requests)?;
+        // One transaction is the persistence boundary for the aggregate. Header
+        // replacement or a later request failure must roll back earlier writes.
         let transaction = self
             .connection
             .transaction()

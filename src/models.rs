@@ -1,3 +1,14 @@
+//! HTTP request domain model and send-time validation.
+//!
+//! The same [`Request`] value is used by the editor, persistence, cURL/Postman
+//! conversion, and network adapter. It is intentionally permissive while the
+//! user edits; [`Request::validated`] is the boundary that rejects incomplete or
+//! unsafe values, removes disabled placeholder rows, and produces sendable data.
+//!
+//! Header and multipart vectors preserve order, duplicates, and enabled state.
+//! JSON source is stored as text rather than a value tree so formatting survives
+//! round trips and validation does not require a second payload-sized copy.
+
 use std::{fmt, path::PathBuf, str::FromStr, time::Duration};
 
 use reqwest::{
@@ -160,6 +171,8 @@ pub struct Request {
 impl Request {
     pub fn validated(mut self) -> Result<Self, ValidationError> {
         self.check(true)?;
+        // Trim in place so validating a large request does not clone its URL or
+        // body merely to normalize the send-time representation.
         let start = self.url.len() - self.url.trim_start().len();
         let end = self.url.trim_end().len();
         self.url.truncate(end);

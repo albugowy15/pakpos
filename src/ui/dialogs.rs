@@ -1,3 +1,11 @@
+//! Modal collection and request dialogs.
+//!
+//! This module owns transient-window construction, validation that affects
+//! button sensitivity, and confirmation UX. Accepted operations are translated
+//! into application actions/effects; database work remains in the runtime. Dialog
+//! callbacks use weak window references where ownership could otherwise retain a
+//! closed widget tree.
+
 use std::rc::Rc;
 
 use gtk::{

@@ -1,3 +1,14 @@
+//! Typed protocol between application policy and imperative runtime work.
+//!
+//! [`Effect`] values are commands produced by [`super::state::AppState`]. The
+//! binary runtime executes them and returns an [`EffectOutput`] to GTK's main
+//! thread. Operation identifiers and original save snapshots travel through the
+//! protocol so late completions can be rejected or reconciled safely.
+//!
+//! Keep values in this module plain and owned. Runtime handles, callbacks,
+//! database connections, and GTK objects would couple application policy to an
+//! execution mechanism and do not belong here.
+
 use std::path::PathBuf;
 
 use uuid::Uuid;

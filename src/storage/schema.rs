@@ -1,3 +1,11 @@
+//! Current SQLite schema initialization.
+//!
+//! Pakpos is not yet published, so startup creates the current strict schema
+//! directly instead of applying numbered migrations. All tables are created in
+//! one transaction: initialization either leaves a complete usable schema or no
+//! partial schema. Foreign-key cascades keep request detail rows aligned with
+//! their collection nodes.
+
 use rusqlite::Connection;
 
 use super::StorageError;

@@ -1,3 +1,10 @@
+//! Transient in-window notification presentation.
+//!
+//! [`Toast`] overlays short request messages without blocking interaction. Each
+//! message receives a monotonically wrapping sequence number so an older timeout
+//! cannot hide a newer notification. Errors remain visible slightly longer and
+//! the close button always allows immediate dismissal.
+
 use std::{cell::Cell, rc::Rc};
 
 use gtk::{
@@ -93,6 +100,7 @@ impl Toast {
         let current_sequence = self.sequence.clone();
         let revealer = self.revealer.downgrade();
         glib::timeout_add_seconds_local_once(if error { 6 } else { 4 }, move || {
+            // Ignore a timer belonging to a message that has since been replaced.
             if current_sequence.get() == sequence
                 && let Some(revealer) = revealer.upgrade()
             {
