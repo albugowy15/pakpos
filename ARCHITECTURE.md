@@ -752,14 +752,14 @@ Versions below are the requirements declared in `Cargo.toml`; `Cargo.lock` recor
 | Crate/library         | Manifest configuration                                               | Responsibility in Pakpos                                                                                                                      |
 | --------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Rust standard library | Rust 2024 edition                                                    | Files, paths, OS threads, channels, collections, `Rc`/`Arc`, time, and Unix permission/path APIs                                              |
-| `gtk4` as `gtk`       | `0.11.4`, feature `v4_10`                                            | Native window, widgets, signals, accessibility roles, clipboard, file dialogs, GIO actions, GDK input, and GLib main-loop integration         |
+| `gtk4` as `gtk`       | `0.11.5`, feature `v4_10`                                            | Native window, widgets, signals, accessibility roles, clipboard, file dialogs, GIO actions, GDK input, and GLib main-loop integration         |
 | `sourceview5`         | `0.11.2`                                                             | JSON source buffer/view, syntax highlighting, bracket matching, indentation support, undo/redo, and style schemes                             |
-| `reqwest`             | `0.13.4`, default features disabled; `multipart`, `rustls`, `stream` | HTTP/HTTPS client, headers, URL parsing, streamed multipart files, streamed response chunks, and TLS through Rustls                           |
-| `tokio`               | `1.50`, features `macros`, `rt`, `sync`, `time`                      | Per-request async runtime, timeout/select logic, cancellation oneshot channel, and async tests/macros used by the library                     |
+| `reqwest`             | `0.13.5`, default features disabled; `multipart`, `rustls`, `stream` | HTTP/HTTPS client, headers, URL parsing, streamed multipart files, streamed response chunks, and TLS through Rustls                           |
+| `tokio`               | `1.53.1`, features `macros`, `rt`, `sync`, `time`                    | Per-request async runtime, timeout/select logic, cancellation oneshot channel, and async tests/macros used by the library                     |
 | `rusqlite`            | `0.40.2`, default features disabled; `bundled`                       | Embedded SQLite connection, transactions, prepared statements, parameters, and row decoding; bundled SQLite avoids a system SQLite dependency |
-| `serde`               | `1.0`, feature `derive`                                              | Serialization derives for request-domain values and custom streaming JSON validation visitor APIs                                             |
-| `serde_json`          | `1.0`                                                                | JSON body validation support, response pretty printing, and Postman JSON parsing/serialization                                                |
-| `uuid`                | `1.21.0`, feature `v4`                                               | Stable random identifiers for collections, requests, temporary files, and test fixtures                                                       |
+| `serde`               | `1.0.229`, feature `derive`                                          | Serialization derives for request-domain values and custom streaming JSON validation visitor APIs                                             |
+| `serde_json`          | `1.0.151`                                                            | JSON body validation support, response pretty printing, and Postman JSON parsing/serialization                                                |
+| `uuid`                | `1.26.1`, feature `v4`                                               | Stable random identifiers for collections, requests, temporary files, and test fixtures                                                       |
 | `shell-words`         | `1.1.1`                                                              | Shell-like lexical splitting of pasted cURL text without invoking a shell                                                                     |
 | `mime_guess`          | `2.0.5`                                                              | File MIME inference for multipart uploads and response filename extensions                                                                    |
 | `percent-encoding`    | `2.3.2`                                                              | Decoding percent-encoded response filenames and URL path segments                                                                             |
@@ -771,7 +771,7 @@ GTK re-exports GIO, GLib, and GDK modules used by the UI and runtime. They are n
 | Crate        | Configuration                       | Responsibility                                                                                         |
 | ------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `jsonschema` | `0.56.0`, default features disabled | Offline validation of exports against the vendored official Postman v2.1 Draft 4 schema                |
-| `tokio`      | `1.40`, feature `full`              | Full async test support; Cargo resolves compatible Tokio requirements into the locked dependency graph |
+| `tokio`      | `1.53.1`, feature `full`            | Full async test support; Cargo resolves compatible Tokio requirements into the locked dependency graph |
 
 ### Native/system libraries
 
