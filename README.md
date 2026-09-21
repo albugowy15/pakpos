@@ -125,3 +125,6 @@ The layout and persistence contract are described in
 
 The application/UI/runtime dependency boundaries are described in
 [`docs/architecture.md`](docs/architecture.md).
+
+Maintainers can follow the [release guide](RELEASE.md) to prepare a version and
+publish it through the tag-triggered release workflow.
