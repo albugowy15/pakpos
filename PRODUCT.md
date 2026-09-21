@@ -32,6 +32,11 @@ copy of the official schema. It verifies folder flattening, supported-field roun
 trips, ignored Postman-only behavior, export schema validity, and equivalent JSON
 and multipart requests against a local HTTP server before and after export.
 
+The opt-in storage performance harness measures isolated release-mode operations
+against 100 collections and a 1,000-request collection. Three initial runs record
+stable statement counts, timings, and peak RSS in
+[storage performance verification](docs/storage-performance.md).
+
 Validation at this revision: formatting and strict all-target/all-feature Clippy
 passed; 83 headless unit tests, one allocation regression test, and three Postman
 interoperability tests passed. The default suite skips one display-dependent GTK
@@ -46,8 +51,6 @@ Remaining initial-release work:
 - Measure current release-build peak and settled RSS for idle, everyday use,
   1 GiB transfers, and repeated requests. The historical idle baseline and Rust
   allocation measurements are partial evidence, not release-budget verification.
-- Measure storage query counts, timings, and peak memory for 100 collections and a
-  1,000-request collection.
 - Complete the manual GTK accessibility, keyboard, theme, responsiveness, and
   remaining acceptance checks.
 

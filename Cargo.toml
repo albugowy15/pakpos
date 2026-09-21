@@ -3,6 +3,9 @@ name = "pakpos"
 version = "0.2.4"
 edition = "2024"
 
+[features]
+storage-profiling = ["rusqlite/trace"]
+
 [dependencies]
 gtk = { package = "gtk4", version = "0.11.5", features = ["v4_10"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["multipart", "rustls", "stream"] }
@@ -19,3 +22,7 @@ uuid = { version = "1.26.1", features = ["v4"] }
 [dev-dependencies]
 jsonschema = { version = "0.56.0", default-features = false }
 tokio = { version = "1.53.1", features = ["full"] }
+
+[[example]]
+name = "storage_performance"
+required-features = ["storage-profiling"]

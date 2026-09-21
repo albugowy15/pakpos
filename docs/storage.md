@@ -152,4 +152,5 @@ Before release, measure collection listing with 100 collections and request-list
 request selection, and one-request autosave with a 1,000-request collection. Record query
 counts, elapsed time, and peak RSS on the reference environment. Verify that listing
 collections and opening a request list do not load unrelated request bodies and that saving
-one request does not rewrite them.
+one request does not rewrite them. The reproducible procedure and opt-in harness are
+documented in [`storage-performance.md`](storage-performance.md).
