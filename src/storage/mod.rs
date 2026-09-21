@@ -23,9 +23,15 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "storage-profiling")]
+use std::cell::Cell;
+
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use uuid::Uuid;
+
+#[cfg(feature = "storage-profiling")]
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 
 use crate::{
     collections::{CollectionNode, CollectionRequest, CollectionSummary},
@@ -33,6 +39,30 @@ use crate::{
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(feature = "storage-profiling")]
+thread_local! {
+    static PROFILED_STATEMENTS: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+#[cfg(feature = "storage-profiling")]
+fn count_profiled_statement(event: TraceEvent<'_>) {
+    if matches!(event, TraceEvent::Stmt(_, _)) {
+        PROFILED_STATEMENTS.with(|count| {
+            if let Some(current) = count.get() {
+                count.set(Some(current + 1));
+            }
+        });
+    }
+}
+
+/// Result of one explicitly profiled storage operation.
+#[cfg(feature = "storage-profiling")]
+#[derive(Debug)]
+pub struct StorageProfile<T> {
+    pub value: T,
+    pub statement_count: usize,
+}
 
 /// SQLite keeps UUIDs as text; bind a stack-encoded value without a temporary String.
 struct SqlId([u8; 36]);
@@ -112,6 +142,32 @@ impl CollectionStore {
             .map_err(StorageError::Database)?;
         initialize(&mut connection)?;
         Ok(Self { connection })
+    }
+
+    /// Counts SQLite statements executed by one storage operation.
+    ///
+    /// This is available only to opt-in performance tooling so normal builds do
+    /// not enable SQLite tracing or pay profiling overhead. The callback and
+    /// counter are scoped to the current thread and connection.
+    #[cfg(feature = "storage-profiling")]
+    pub fn profile<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, StorageError>,
+    ) -> Result<StorageProfile<T>, StorageError> {
+        PROFILED_STATEMENTS.with(|count| count.set(Some(0)));
+        self.connection.trace_v2(
+            TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(count_profiled_statement),
+        );
+
+        let result = operation(self);
+
+        self.connection.trace_v2(TraceEventCodes::empty(), None);
+        let statement_count = PROFILED_STATEMENTS.with(|count| count.take().unwrap_or_default());
+        result.map(|value| StorageProfile {
+            value,
+            statement_count,
+        })
     }
 
     pub fn list_collections(&self) -> Result<Vec<CollectionSummary>, StorageError> {

@@ -54,6 +54,19 @@ fn saves_lists_and_loads_a_request() {
     assert_eq!(store.load_request(request.node.id).unwrap(), request);
 }
 
+#[cfg(feature = "storage-profiling")]
+#[test]
+fn profiles_sql_statements_for_one_operation() {
+    let mut store = CollectionStore::open_in_memory().unwrap();
+    let collection = collection("Profiled");
+    store.save_collection(&collection, &[], &[], &[]).unwrap();
+
+    let profile = store.profile(|store| store.list_collections()).unwrap();
+
+    assert_eq!(profile.value, [collection]);
+    assert_eq!(profile.statement_count, 1);
+}
+
 #[test]
 fn tracks_the_most_recently_opened_collection() {
     let mut store = CollectionStore::open_in_memory().unwrap();
