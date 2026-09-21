@@ -821,7 +821,12 @@ cargo test
 cargo build --release
 ```
 
-The CI workflow runs all four. Tagged releases build an `x86_64-unknown-linux-gnu` binary, package it as a tarball, generate release notes with git-cliff, and create a GitHub release.
+The CI workflow runs all four. A semantic version tag matching `Cargo.toml` repeats
+those gates with locked dependencies, builds an `x86_64-unknown-linux-gnu` binary,
+and packages it as a tarball. The release workflow uses git-cliff to generate
+`CHANGELOG.md` from the tag's conventional commit history, then creates a GitHub
+release with that changelog, the binary archive, and its SHA-256 checksum. See
+`RELEASE.md` for the maintainer procedure.
 
 ## 19. Where to make a change
 

@@ -45,6 +45,8 @@ commit_parsers = [
   { message = "^refactor", group = "Refactor" },
   { message = "^style", group = "Styling" },
   { message = "^test", group = "Testing" },
+  { message = "^build", group = "Build" },
+  { message = "^ci", group = "CI" },
   { message = "^chore\\(release\\): v", skip = true },
   { message = "^chore", group = "Miscellaneous Tasks" },
   { body = ".*security", group = "Security" },
@@ -54,7 +56,7 @@ protect_breaking_commits = false
 # filter out the commits that are not matched by commit_parsers
 filter_commits = false
 # regex for matching git tags
-tag_pattern = "v[0-9]*"
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
 # sort the tags topologically
 topo_order = false
 # sort the commits inside sections by oldest/newest order

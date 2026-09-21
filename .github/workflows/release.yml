@@ -5,94 +5,126 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
+
+env:
+  TARGET: x86_64-unknown-linux-gnu
 
 jobs:
   build:
-    name: Build Binaries
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary_name: pakpos
-            asset_name: pakpos-linux-x86_64.tar.gz
+    name: Verify and build Linux binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout release tag
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ env.TARGET }}
+
+      - name: Verify tag matches the crate version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tags must use semantic versioning (for example, v1.2.3)."
+            exit 1
+          fi
+
+          crate_version="$({ cargo metadata --locked --no-deps --format-version 1; } | jq -r '.packages[] | select(.name == "pakpos") | .version')"
+          if [[ "v${crate_version}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version v${crate_version}."
+            exit 1
+          fi
 
       - name: Install GTK development files
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libgtksourceview-5-dev pkg-config
 
-      - name: Build binary
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
-      - name: Package binary
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --locked --release --target "${TARGET}"
+
+      - name: Package release binary
+        shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          tar -czvf ../../../${{ matrix.asset_name }} ${{ matrix.binary_name }}
+          set -euo pipefail
+          asset="pakpos-linux-x86_64.tar.gz"
+          install -Dm755 "target/${TARGET}/release/pakpos" package/pakpos
+          tar -C package -czf "${asset}" pakpos
+          sha256sum "${asset}" > "${asset}.sha256"
 
-      - name: Upload artifacts
+      - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: ${{ matrix.asset_name }}
+          name: linux-release
+          path: |
+            pakpos-linux-x86_64.tar.gz
+            pakpos-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
 
   release:
-    name: Create GitHub Release
+    name: Publish GitHub release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout release tag
+        uses: actions/checkout@v6
         with:
-          fetch-depth: 0 # Essential for git-cliff to read history
+          fetch-depth: 0
 
-      - name: Generate Release Notes
+      - name: Generate changelog
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --latest --strip header
+          args: --verbose
         env:
-          OUTPUT: RELEASE_NOTES.md
+          OUTPUT: CHANGELOG.md
 
-      - name: Update CHANGELOG.md in repository
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: -o CHANGELOG.md
+      - name: Create release directory
+        run: mkdir -p release
 
-      - name: Commit and Push CHANGELOG.md
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          git commit -m "chore: update CHANGELOG.md for ${{ github.ref_name }}" || echo "No changes to commit"
-          git push origin HEAD:main
-
-      - name: Download all artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          pattern: pakpos-*
-          merge-multiple: true
+          name: linux-release
+          path: release
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Publish release and assets
+        uses: softprops/action-gh-release@v3
         with:
-          name: Release ${{ github.ref_name }}
-          body_path: RELEASE_NOTES.md
-          files: artifacts/pakpos-*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: Pakpos ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: CHANGELOG.md
+          files: |
+            release/pakpos-linux-x86_64.tar.gz
+            release/pakpos-linux-x86_64.tar.gz.sha256
+            CHANGELOG.md
+          fail_on_unmatched_files: true
