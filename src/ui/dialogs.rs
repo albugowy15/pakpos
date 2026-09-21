@@ -9,8 +9,8 @@
 use std::rc::Rc;
 
 use gtk::{
-    AlertDialog, Align, ApplicationWindow, Box as GtkBox, Button, Entry, Label, Orientation,
-    Window, gio, prelude::*,
+    AlertDialog, Align, ApplicationWindow, Box as GtkBox, Button, Entry, EventControllerKey, Label,
+    Orientation, Window, gdk, gio, glib, prelude::*,
 };
 use pakpos::{
     app::{Action, CollectionSession, EffectOutput},
@@ -21,7 +21,24 @@ use uuid::Uuid;
 use super::editor::{EditorWidgets, request_autosave};
 use super::flow::{clear_request_editor, remove_request};
 use super::sidebar::{refresh_collection_choices, render_request_buttons};
-use super::{RequestState, SidebarWidgets, show_error, show_message};
+use super::{RequestState, SidebarWidgets, set_accessible_label, show_error, show_message};
+
+fn close_on_escape(dialog: &Window) {
+    let keys = EventControllerKey::new();
+    keys.connect_key_pressed({
+        let dialog = dialog.downgrade();
+        move |_, key, _, _| {
+            if key != gdk::Key::Escape {
+                return glib::Propagation::Proceed;
+            }
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
+            }
+            glib::Propagation::Stop
+        }
+    });
+    dialog.add_controller(keys);
+}
 
 pub(super) fn show_create_collection_dialog(
     window: &ApplicationWindow,
@@ -37,13 +54,14 @@ pub(super) fn show_create_collection_dialog(
         .default_width(380)
         .resizable(false)
         .build();
+    close_on_escape(&dialog);
     let content = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(12)
-        .margin_top(16)
-        .margin_bottom(16)
-        .margin_start(16)
-        .margin_end(16)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
         .build();
     let prompt = Label::builder()
         .label("Collection name")
@@ -53,6 +71,7 @@ pub(super) fn show_create_collection_dialog(
         .placeholder_text("Collection name")
         .activates_default(true)
         .build();
+    set_accessible_label(&name, "Collection name");
     let actions = GtkBox::new(Orientation::Horizontal, 6);
     actions.set_halign(Align::End);
     let cancel = Button::with_label("Cancel");
@@ -164,18 +183,20 @@ pub(super) fn show_rename_request_dialog(
         .default_width(380)
         .resizable(false)
         .build();
+    close_on_escape(&dialog);
     let content = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(12)
-        .margin_top(16)
-        .margin_bottom(16)
-        .margin_start(16)
-        .margin_end(16)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
         .build();
     let name = Entry::builder()
         .text(current_name)
         .activates_default(true)
         .build();
+    set_accessible_label(&name, "Request name");
     let actions = GtkBox::new(Orientation::Horizontal, 6);
     actions.set_halign(Align::End);
     let cancel = Button::with_label("Cancel");

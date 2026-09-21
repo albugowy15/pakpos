@@ -20,6 +20,7 @@ use pakpos::models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Requ
 use sourceview5::prelude::{BufferExt, ViewExt};
 
 use super::json_editor::{self, JsonEditorState};
+use super::set_accessible_label;
 
 pub(super) type AutosaveTrigger = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
@@ -127,6 +128,7 @@ pub(super) fn add_header_row(
         .active(true)
         .tooltip_text("Send this header")
         .build();
+    set_accessible_label(&enabled, "Send this header");
     let name = Entry::builder()
         .placeholder_text("Header name")
         .hexpand(true)
@@ -135,6 +137,8 @@ pub(super) fn add_header_row(
         .placeholder_text("Value")
         .hexpand(true)
         .build();
+    set_accessible_label(&name, "Header name");
+    set_accessible_label(&value, "Header value");
     name.add_css_class("monospace");
     value.add_css_class("monospace");
     autosave_on_blur(&name, autosave);
@@ -144,6 +148,7 @@ pub(super) fn add_header_row(
         move |_| request_autosave(&autosave)
     });
     let remove = Button::with_label("Remove");
+    set_accessible_label(&remove, "Remove header");
     row.append(&enabled);
     row.append(&name);
     row.append(&value);
@@ -194,6 +199,7 @@ pub(super) fn build_body_page(
         .build();
     let mode = DropDown::from_strings(&["None", "JSON", "Multipart"]);
     mode.set_halign(Align::Start);
+    set_accessible_label(&mode, "Request body type");
     let language = sourceview5::LanguageManager::default().language("json");
     let editor_buffer = match language.as_ref() {
         Some(language) => sourceview5::Buffer::builder()
@@ -226,6 +232,7 @@ pub(super) fn build_body_page(
         .left_margin(8)
         .right_margin(8)
         .build();
+    set_accessible_label(&editor, "JSON request body");
     editor.space_drawer().set_enable_matrix(false);
     let json_editor_state = json_editor::configure(&editor);
     let editor_scroll = scrolled(&editor);
@@ -349,6 +356,7 @@ pub(super) fn add_multipart_row(
         .active(true)
         .tooltip_text("Send this multipart field")
         .build();
+    set_accessible_label(&enabled, "Send this multipart field");
     let name = Entry::builder()
         .placeholder_text("Field name")
         .hexpand(true)
@@ -362,6 +370,11 @@ pub(super) fn add_multipart_row(
     let browse = Button::with_label("Choose…");
     browse.set_visible(false);
     let remove = Button::with_label("Remove");
+    set_accessible_label(&name, "Multipart field name");
+    set_accessible_label(&kind, "Multipart field type");
+    set_accessible_label(&value, "Multipart field value");
+    set_accessible_label(&browse, "Choose multipart file");
+    set_accessible_label(&remove, "Remove multipart field");
     name.add_css_class("monospace");
     value.add_css_class("monospace");
     autosave_on_blur(&name, autosave);

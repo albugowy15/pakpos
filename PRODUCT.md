@@ -37,6 +37,11 @@ against 100 collections and a 1,000-request collection. Three initial runs recor
 stable statement counts, timings, and peak RSS in
 [storage performance verification](docs/storage-performance.md).
 
+The GTK interface was verified at 900 × 600 with native light and dark themes.
+Keyboard navigation and shortcuts were exercised, custom dialogs now support Escape,
+and user-facing controls have explicit accessible names covered by the display test.
+Results are recorded in [GTK interface verification](docs/gtk-verification.md).
+
 Validation at this revision: formatting and strict all-target/all-feature Clippy
 passed; 83 headless unit tests, one allocation regression test, and three Postman
 interoperability tests passed. The default suite skips one display-dependent GTK
@@ -51,8 +56,6 @@ Remaining initial-release work:
 - Measure current release-build peak and settled RSS for idle, everyday use,
   1 GiB transfers, and repeated requests. The historical idle baseline and Rust
   allocation measurements are partial evidence, not release-budget verification.
-- Complete the manual GTK accessibility, keyboard, theme, responsiveness, and
-  remaining acceptance checks.
 
 ## Purpose
 
