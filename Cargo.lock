@@ -1274,7 +1274,7 @@ checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
 name = "pakpos"
-version = "0.2.4"
+version = "0.3.0-beta"
 dependencies = [
  "gtk4",
  "jsonschema",
