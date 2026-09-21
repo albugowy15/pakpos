@@ -100,13 +100,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Generate changelog
+      - name: Generate current release notes
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --verbose
+          args: --verbose --latest --strip header
         env:
-          OUTPUT: CHANGELOG.md
+          OUTPUT: RELEASE_NOTES.md
 
       - name: Create release directory
         run: mkdir -p release
@@ -122,9 +122,8 @@ jobs:
         with:
           name: Pakpos ${{ github.ref_name }}
           prerelease: ${{ contains(github.ref_name, '-') }}
-          body_path: CHANGELOG.md
+          body_path: RELEASE_NOTES.md
           files: |
             release/pakpos-linux-x86_64.tar.gz
             release/pakpos-linux-x86_64.tar.gz.sha256
-            CHANGELOG.md
           fail_on_unmatched_files: true

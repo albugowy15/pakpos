@@ -62,11 +62,12 @@ Pushing the tag starts `.github/workflows/release.yml`. The workflow:
 1. Checks that the tag uses semantic versioning and matches `Cargo.toml`.
 2. Repeats formatting, Clippy, test, and locked release-build checks.
 3. Builds and packages the `x86_64-unknown-linux-gnu` executable.
-4. Generates `CHANGELOG.md` from the full tag history with git-cliff.
-5. Creates a GitHub Release and uploads the binary archive, checksum, and changelog.
+4. Generates the current version's release notes from commits since the previous tag.
+5. Creates a GitHub Release and uploads the binary archive and checksum.
 
-The workflow-generated changelog is used as the GitHub Release description. It is
-not committed back to `main`.
+Only the current version's notes are used as the GitHub Release description. The
+temporary release-notes file is neither attached to the release nor committed to
+`main`.
 
 ## Verify the GitHub Release
 
@@ -75,7 +76,6 @@ Then open the new entry under **Releases** and confirm that it has these assets:
 
 - `pakpos-linux-x86_64.tar.gz`
 - `pakpos-linux-x86_64.tar.gz.sha256`
-- `CHANGELOG.md`
 
 Download the archive and checksum into the same directory, then verify and inspect
 the package:
