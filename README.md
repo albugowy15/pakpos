@@ -57,7 +57,7 @@ GTK verification.
 | Postman v2.1 import/export | Available for supported request fields; folders flatten on import |
 | Automated Postman interoperability verification | Fixture import, official-schema validation, semantic round trip, and local-server wire checks pass |
 | Release memory and storage performance measurements | Storage workload measured; full-application memory scenarios pending |
-| Manual accessibility and Postman desktop verification | Pending |
+| Manual accessibility and Postman desktop verification | GTK pass complete; Postman desktop verification pending |
 
 The [allocation audit](docs/memory-allocation-audit.md) records measured reductions
 and remaining costs. The [earlier idle RSS baseline](docs/memory-baseline.md) does
@@ -65,6 +65,8 @@ not establish that the current build meets all release memory budgets. See
 [implementation progress](PRODUCT.md#implementation-progress) for remaining work.
 The opt-in [storage performance harness](docs/storage-performance.md) measures the
 large-collection SQLite workloads without adding tracing overhead to normal builds.
+The [GTK verification report](docs/gtk-verification.md) records the 900×600,
+light/dark theme, keyboard, and accessibility pass.
 
 ## Build and run
 

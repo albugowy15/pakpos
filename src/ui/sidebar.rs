@@ -25,20 +25,22 @@ use super::flow::{
     add_collection_request, autosave_current_collection, continue_after_autosave,
     copy_request_as_curl, duplicate_request, load_collection, select_request,
 };
-use super::{RequestState, SidebarWidgets, show_error, show_message};
+use super::{RequestState, SidebarWidgets, set_accessible_label, show_error, show_message};
 
 pub(super) fn build_sidebar(autosave: AutosaveTrigger) -> SidebarWidgets {
     let sidebar = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(8)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
         .build();
     let collection_picker = DropDown::from_strings(&[]);
     collection_picker.set_width_request(240);
     collection_picker.set_tooltip_text(Some("Active collection"));
+    set_accessible_label(&collection_picker, "Active collection");
+    collection_picker.update_property(&[gtk::accessible::Property::KeyShortcuts("Control+O")]);
     let request_heading_row = GtkBox::new(Orientation::Horizontal, 12);
     let requests = ListBox::builder()
         .selection_mode(SelectionMode::Single)
@@ -50,13 +52,16 @@ pub(super) fn build_sidebar(autosave: AutosaveTrigger) -> SidebarWidgets {
         .tooltip_text("Search request names; press Enter or leave the field to apply")
         .hexpand(true)
         .build();
+    set_accessible_label(&search, "Search request names");
     request_heading_row.append(&search);
     let new_request = Button::builder()
         .label("+")
         .tooltip_text("Create HTTP request")
         .build();
+    set_accessible_label(&new_request, "Create HTTP request");
     request_heading_row.append(&new_request);
     let status = Label::builder()
+        .accessible_role(gtk::AccessibleRole::Status)
         .halign(Align::Start)
         .wrap(true)
         .selectable(true)

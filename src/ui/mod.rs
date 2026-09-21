@@ -50,6 +50,18 @@ use self::flow::{autosave_current_collection, capture_active_request, collection
 use self::sidebar::{build_sidebar, setup_collection_actions};
 use self::toast::Toast;
 
+pub(super) fn set_accessible_label(widget: &impl IsA<gtk::Widget>, label: &str) {
+    widget
+        .as_ref()
+        .update_property(&[gtk::accessible::Property::Label(label)]);
+}
+
+fn set_accessible_shortcut(widget: &impl IsA<gtk::Widget>, shortcut: &str) {
+    widget
+        .as_ref()
+        .update_property(&[gtk::accessible::Property::KeyShortcuts(shortcut)]);
+}
+
 type SidebarWidgets = Rc<SidebarWidgetHandles>;
 
 struct SidebarWidgetHandles {
@@ -120,6 +132,7 @@ pub fn build(application: &Application) {
         .menu_model(&collection_actions)
         .tooltip_text("Collection actions")
         .build();
+    set_accessible_label(&collection_menu, "Collection actions");
     header_bar.pack_start(&collection_menu);
     header_bar.set_title_widget(Some(&sidebar.collection_picker));
     root.set_start_child(Some(&sidebar.root));
@@ -129,10 +142,10 @@ pub fn build(application: &Application) {
         .position(320)
         .shrink_start_child(false)
         .shrink_end_child(false)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
         .build();
     let request_panel = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -152,6 +165,7 @@ pub fn build(application: &Application) {
     let method_labels = HttpMethod::ALL.map(HttpMethod::as_str);
     let method = DropDown::from_strings(&method_labels);
     method.set_tooltip_text(Some("HTTP request method"));
+    set_accessible_label(&method, "HTTP request method");
     method.connect_selected_notify({
         let autosave = autosave.clone();
         move |_| request_autosave(&autosave)
@@ -163,9 +177,11 @@ pub fn build(application: &Application) {
         .build();
     url.add_css_class("monospace");
     url.set_tooltip_text(Some("Absolute HTTP or HTTPS URL"));
+    set_accessible_label(&url, "Request URL");
     autosave_on_blur(&url, &autosave);
     let send = Button::with_label("Send");
     send.add_css_class("suggested-action");
+    set_accessible_shortcut(&send, "Control+Enter");
     let request_actions = gio::Menu::new();
     request_actions.append(Some("Copy as cURL"), Some("win.copy-curl"));
     request_actions.append(Some("Paste cURL"), Some("win.paste-curl"));
@@ -174,6 +190,7 @@ pub fn build(application: &Application) {
         .menu_model(&request_actions)
         .tooltip_text("More request actions")
         .build();
+    set_accessible_label(&send_menu, "More request actions");
     send_menu.add_css_class("suggested-action");
     let send_group = GtkBox::new(Orientation::Horizontal, 0);
     send_group.add_css_class("linked");
@@ -206,12 +223,15 @@ pub fn build(application: &Application) {
     let response_notebook = Notebook::new();
     response_notebook.set_vexpand(true);
     let response_body = readonly_text_view();
+    set_accessible_label(&response_body, "Response body");
     response_notebook.append_page(&scrolled(&response_body), Some(&Label::new(Some("Body"))));
     let response_raw = readonly_text_view();
+    set_accessible_label(&response_raw, "Raw response body");
     let response_raw_page = scrolled(&response_raw);
     response_raw_page.set_visible(false);
     response_notebook.append_page(&response_raw_page, Some(&Label::new(Some("Raw"))));
     let response_headers = readonly_text_view();
+    set_accessible_label(&response_headers, "Response headers");
     response_notebook.append_page(
         &scrolled(&response_headers),
         Some(&Label::new(Some("Headers"))),

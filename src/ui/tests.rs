@@ -11,6 +11,14 @@ use pakpos::{app::CollectionSession, models::Request};
 use sidebar::{build_request_context_menu, render_request_buttons};
 use sourceview5::prelude::*;
 
+fn assert_has_accessible_label(widget: &impl IsA<gtk::Widget>) {
+    assert!(
+        gtk::test_accessible_has_property(widget.as_ref(), gtk::AccessibleProperty::Label,),
+        "{} has no explicit accessible label",
+        widget.as_ref().type_().name(),
+    );
+}
+
 #[test]
 fn json_style_scheme_follows_the_gtk_theme() {
     assert_eq!(json_style_scheme_id(false, Some("Adwaita")), "Adwaita");
@@ -44,6 +52,26 @@ fn widget_lifetimes() {
         header_rows,
         body,
     });
+    assert_has_accessible_label(&sidebar.collection_picker);
+    assert_has_accessible_label(&sidebar.search);
+    assert_has_accessible_label(&sidebar.new_request);
+    assert!(gtk::test_accessible_has_role(
+        &sidebar.status,
+        gtk::AccessibleRole::Status,
+    ));
+    let header = editor.header_rows.borrow()[0].clone();
+    assert_has_accessible_label(&header.enabled);
+    assert_has_accessible_label(&header.name);
+    assert_has_accessible_label(&header.value);
+    assert_has_accessible_label(&editor.body.mode);
+    assert_has_accessible_label(&editor.body.json_editor);
+    let multipart = editor.body.multipart_rows.borrow()[0].clone();
+    assert_has_accessible_label(&multipart.enabled);
+    assert_has_accessible_label(&multipart.name);
+    assert_has_accessible_label(&multipart.kind);
+    assert_has_accessible_label(&multipart.value);
+    drop(header);
+    drop(multipart);
     assert!(editor.body.json_editor.is_auto_indent());
     assert!(editor.body.json_editor.is_indent_on_tab());
     assert!(editor.body.json_editor.is_insert_spaces_instead_of_tabs());

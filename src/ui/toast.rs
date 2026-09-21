@@ -12,6 +12,8 @@ use gtk::{
     RevealerTransitionType, Widget, glib, prelude::*,
 };
 
+use super::set_accessible_label;
+
 #[derive(Clone)]
 pub(super) struct Toast {
     revealer: Revealer,
@@ -28,9 +30,9 @@ impl Toast {
             .wrap(true)
             .selectable(true)
             .max_width_chars(72)
-            .margin_top(10)
-            .margin_bottom(10)
-            .margin_start(12)
+            .margin_top(8)
+            .margin_bottom(8)
+            .margin_start(8)
             .margin_end(6)
             .build();
         let close = Button::builder()
@@ -39,6 +41,7 @@ impl Toast {
             .valign(Align::Center)
             .margin_end(6)
             .build();
+        set_accessible_label(&close, "Dismiss notification");
         close.add_css_class("flat");
 
         let content = GtkBox::builder()
@@ -52,7 +55,7 @@ impl Toast {
         let revealer = Revealer::builder()
             .halign(Align::Center)
             .valign(Align::End)
-            .margin_bottom(24)
+            .margin_bottom(8)
             .transition_type(RevealerTransitionType::SlideUp)
             .transition_duration(150)
             .child(&content)
