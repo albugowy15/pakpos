@@ -65,14 +65,11 @@ Pushing the tag starts `.github/workflows/release.yml`. The workflow:
 4. Generates the current version's release notes from commits since the previous tag.
 5. Creates a GitHub Release and uploads the binary archive and checksum.
 
-Only the current version's notes are used as the GitHub Release description. The
-temporary release-notes file is neither attached to the release nor committed to
-`main`.
+Only the current version's notes are used as the GitHub Release description. The temporary release-notes file is neither attached to the release nor committed to `main`.
 
 ## Verify the GitHub Release
 
-Open the repository's **Actions** page and wait for the **Release** workflow to pass.
-Then open the new entry under **Releases** and confirm that it has these assets:
+Open the repository's **Actions** page and wait for the **Release** workflow to pass. Then open the new entry under **Releases** and confirm that it has these assets:
 
 - `pakpos-linux-x86_64.tar.gz`
 - `pakpos-linux-x86_64.tar.gz.sha256`
@@ -87,9 +84,14 @@ tar -tzf pakpos-linux-x86_64.tar.gz
 
 The archive should contain one executable named `pakpos`.
 
+Finally, verify that the public installer can download and install the new release. For prereleases, pass the tag explicitly because GitHub's `latest` URL selects only the latest stable release:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf \
+  https://raw.githubusercontent.com/albugowy15/pakpos/main/install.sh \
+  | PAKPOS_INSTALL_DIR="$(mktemp -d)" sh -s -- vX.Y.Z
+```
+
 ## Failed releases
 
-If the workflow fails, inspect the failed step in GitHub Actions. A transient failure
-can be retried from the workflow page. If code, version, or configuration must change,
-make a corrective commit and publish a new version tag; do not move a tag that has
-already been published.
+If the workflow fails, inspect the failed step in GitHub Actions. A transient failure can be retried from the workflow page. If code, version, or configuration must change, make a corrective commit and publish a new version tag; do not move a tag that has already been published.
