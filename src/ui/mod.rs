@@ -21,7 +21,7 @@ use std::{
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry, FileDialog, HeaderBar,
     Label, ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, ScrolledWindow, TextView,
-    gio, glib, prelude::*,
+    ToggleButton, gio, glib, prelude::*,
 };
 use pakpos::{
     app::{Action, AppEvent, AppState, DeferredAction, EffectOutput},
@@ -135,6 +135,14 @@ pub fn build(application: &Application) {
     set_accessible_label(&collection_menu, "Collection actions");
     header_bar.pack_start(&collection_menu);
     header_bar.set_title_widget(Some(&sidebar.collection_picker));
+    let layout_toggle = ToggleButton::new();
+    layout_toggle.set_icon_name("view-dual-symbolic");
+    layout_toggle.set_tooltip_text(Some("Show the request and response panels side by side"));
+    set_accessible_label(
+        &layout_toggle,
+        "Show the request and response panels side by side",
+    );
+    header_bar.pack_end(&layout_toggle);
     root.set_start_child(Some(&sidebar.root));
 
     let main = Paned::builder()
@@ -214,6 +222,38 @@ pub fn build(application: &Application) {
     main.connect_position_notify({
         let json_editor = body.json_editor.downgrade();
         move |_| {
+            if let Some(json_editor) = json_editor.upgrade() {
+                json_editor.queue_draw();
+            }
+        }
+    });
+    layout_toggle.connect_toggled({
+        let main = main.clone();
+        let request_panel = request_panel.clone();
+        let response_panel = response_panel.clone();
+        let json_editor = body.json_editor.downgrade();
+        move |toggle| {
+            let side_by_side = toggle.is_active();
+            let orientation = if side_by_side {
+                Orientation::Horizontal
+            } else {
+                Orientation::Vertical
+            };
+            main.set_orientation(orientation);
+
+            request_panel.set_margin_bottom(if side_by_side { 0 } else { 6 });
+            request_panel.set_margin_end(if side_by_side { 6 } else { 0 });
+            response_panel.set_margin_top(if side_by_side { 0 } else { 6 });
+            response_panel.set_margin_start(if side_by_side { 6 } else { 0 });
+
+            let available = if side_by_side {
+                main.width()
+            } else {
+                main.height()
+            };
+            if available > 0 {
+                main.set_position(available / 2);
+            }
             if let Some(json_editor) = json_editor.upgrade() {
                 json_editor.queue_draw();
             }
