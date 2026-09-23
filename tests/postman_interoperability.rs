@@ -9,7 +9,7 @@ use std::{
 
 use pakpos::{
     collections::CollectionRequest,
-    models::{HeaderRow, MultipartField, MultipartValue, Request, RequestBody},
+    models::{FormField, HeaderRow, MultipartField, MultipartValue, Request, RequestBody},
     net,
     postman::{self, ImportedCollection},
 };
@@ -55,6 +55,7 @@ fn representative_fixture_imports_the_supported_subset() {
         [
             "Send JSON",
             "Upload multipart",
+            "Submit URL encoded form",
             "Unsupported body becomes empty",
         ]
     );
@@ -99,7 +100,11 @@ fn representative_fixture_imports_the_supported_subset() {
             value: MultipartValue::Text("ignored".to_owned()),
         }
     );
-    assert_eq!(imported.requests[2].request.body, RequestBody::None);
+    assert_eq!(
+        imported.requests[2].request.body,
+        RequestBody::FormUrlEncoded(vec![FormField::enabled("name", "Pakpos")])
+    );
+    assert_eq!(imported.requests[3].request.body, RequestBody::None);
 }
 
 #[test]

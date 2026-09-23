@@ -40,8 +40,9 @@ may be refined during implementation without changing the product behavior.
 | --- | --- |
 | Collection | Stable ID, name, timestamps |
 | Request metadata | Stable ID, collection ID, name, list position |
-| Request details | Request ID, method, URL, body mode, JSON source text |
+| Request details | Request ID, method, URL, body mode, textual body source where applicable |
 | Header | Request ID, position, enabled state, name, value |
+| URL-encoded form field | Request ID, position, enabled state, key, value |
 | Multipart field | Request ID, position, enabled state, field name, text/file kind, text value or resolved file path |
 
 Use persisted UUIDs or identifiers with equivalent collision resistance. Names are
@@ -60,7 +61,7 @@ Native persistence is not an in-memory mirror of the complete database:
 1. Application startup opens and validates the database and lists collection
    metadata only.
 2. Opening a collection loads the flat request metadata list required by the sidebar.
-3. Selecting a request loads that request, its headers, body, and multipart fields.
+3. Selecting a request loads that request, its headers, body, URL-form fields, and multipart fields.
 4. Switching requests captures current editor changes before releasing the previous
    request's detailed state.
 5. Responses and downloads never enter the collection store.
@@ -77,7 +78,7 @@ request changes are persisted immediately without a timer-based debounce. Pakpos
 does not expose an explicit Save action.
 
 - Autosave captures current editor values and commits all changed collection, node,
-  request, header, and multipart records in one SQLite transaction.
+  request, header, URL-form, and multipart records in one SQLite transaction.
 - Renaming a lazily loaded request updates its node metadata without loading or
   rewriting that request's URL, headers, or body.
 - Editing one request must not serialize, delete, or rewrite unrelated requests.

@@ -1,6 +1,6 @@
 //! Request-editor widgets and domain-value translation.
 //!
-//! Builders in this module create header, JSON, and multipart controls. The
+//! Builders in this module create header, textual-body, and multipart controls. The
 //! paired [`collect_request`] and [`apply_request`] functions are the only broad
 //! conversion boundary between widgets and the native [`Request`] model, keeping
 //! persistence and networking independent of GTK.
@@ -16,13 +16,20 @@ use gtk::{
     EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, TextView, gio, glib,
     prelude::*,
 };
-use pakpos::models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody};
-use sourceview5::prelude::{BufferExt, ViewExt};
+use pakpos::models::{
+    FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
+};
+use sourceview5::prelude::BufferExt;
 
-use super::json_editor::{self, JsonEditorState};
 use super::set_accessible_label;
 
 pub(super) type AutosaveTrigger = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
+const BODY_MODE_NONE: u32 = 0;
+const BODY_MODE_JSON: u32 = 1;
+const BODY_MODE_FORM_URL_ENCODED: u32 = 2;
+const BODY_MODE_MULTIPART: u32 = 3;
+const BODY_MODE_TEXT: u32 = 4;
 
 #[derive(Clone)]
 pub(super) struct HeaderWidgets {
@@ -42,10 +49,20 @@ pub(super) struct MultipartWidgets {
 }
 
 #[derive(Clone)]
+pub(super) struct FormWidgets {
+    pub(super) row: GtkBox,
+    pub(super) enabled: CheckButton,
+    pub(super) name: Entry,
+    pub(super) value: Entry,
+}
+
+#[derive(Clone)]
 pub(super) struct BodyWidgets {
     pub(super) mode: DropDown,
     pub(super) json_editor: sourceview5::View,
-    pub(super) json_editor_state: Rc<JsonEditorState>,
+    pub(super) text_editor: sourceview5::View,
+    pub(super) form_box: GtkBox,
+    pub(super) form_rows: Rc<RefCell<Vec<FormWidgets>>>,
     pub(super) multipart_box: GtkBox,
     pub(super) multipart_rows: Rc<RefCell<Vec<MultipartWidgets>>>,
     pub(super) autosave: AutosaveTrigger,
@@ -197,7 +214,13 @@ pub(super) fn build_body_page(
         .margin_start(8)
         .margin_end(8)
         .build();
-    let mode = DropDown::from_strings(&["None", "JSON", "Multipart"]);
+    let mode = DropDown::from_strings(&[
+        "None",
+        "JSON",
+        "Form Url Encoded",
+        "Form Multipart",
+        "Plain Text",
+    ]);
     mode.set_halign(Align::Start);
     set_accessible_label(&mode, "Request body type");
     let language = sourceview5::LanguageManager::default().language("json");
@@ -205,27 +228,21 @@ pub(super) fn build_body_page(
         Some(language) => sourceview5::Buffer::builder()
             .language(language)
             .highlight_syntax(true)
-            .highlight_matching_brackets(true)
             .enable_undo(true)
             .build(),
-        None => sourceview5::Buffer::builder()
-            .highlight_matching_brackets(true)
-            .enable_undo(true)
-            .build(),
+        None => sourceview5::Buffer::builder().enable_undo(true).build(),
     };
     editor_buffer.set_max_undo_levels(100);
-    configure_json_style_scheme(&editor_buffer);
+    configure_editor_style_scheme(&editor_buffer);
     let editor = sourceview5::View::builder()
         .buffer(&editor_buffer)
+        .monospace(true)
         .auto_indent(true)
         .indent_on_tab(true)
         .indent_width(2)
         .tab_width(2)
         .insert_spaces_instead_of_tabs(true)
-        .smart_backspace(true)
-        .monospace(true)
-        .hexpand(true)
-        .vexpand(true)
+        .show_line_numbers(true)
         .wrap_mode(gtk::WrapMode::None)
         .top_margin(8)
         .bottom_margin(8)
@@ -233,13 +250,67 @@ pub(super) fn build_body_page(
         .right_margin(8)
         .build();
     set_accessible_label(&editor, "JSON request body");
-    editor.space_drawer().set_enable_matrix(false);
-    let json_editor_state = json_editor::configure(&editor);
     let editor_scroll = scrolled(&editor);
     editor_scroll.set_vexpand(true);
     autosave_on_blur(&editor, autosave);
     editor_scroll.set_min_content_height(150);
     editor_scroll.set_visible(false);
+
+    let text_buffer = sourceview5::Buffer::builder()
+        .highlight_matching_brackets(true)
+        .enable_undo(true)
+        .build();
+    text_buffer.set_max_undo_levels(100);
+    configure_editor_style_scheme(&text_buffer);
+    let text_editor = sourceview5::View::builder()
+        .buffer(&text_buffer)
+        .auto_indent(true)
+        .indent_on_tab(true)
+        .indent_width(2)
+        .tab_width(2)
+        .insert_spaces_instead_of_tabs(true)
+        .monospace(true)
+        .show_line_numbers(true)
+        .wrap_mode(gtk::WrapMode::None)
+        .top_margin(8)
+        .bottom_margin(8)
+        .left_margin(8)
+        .right_margin(8)
+        .build();
+    set_accessible_label(&text_editor, "Text request body");
+    autosave_on_blur(&text_editor, autosave);
+    let text_scroll = scrolled(&text_editor);
+    text_scroll.set_vexpand(true);
+    text_scroll.set_min_content_height(150);
+    text_scroll.set_visible(false);
+
+    let form_panel = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(6)
+        .build();
+    let form_box = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(4)
+        .build();
+    let form_rows = Rc::new(RefCell::new(Vec::new()));
+    add_form_urlencoded_row(&form_box, &form_rows, autosave);
+    let add_form_field = Button::with_label("Add field");
+    add_form_field.set_halign(Align::Start);
+    add_form_field.connect_clicked({
+        let form_box = form_box.clone();
+        let form_rows = form_rows.clone();
+        let autosave = autosave.clone();
+        move |_| {
+            add_form_urlencoded_row(&form_box, &form_rows, &autosave);
+            request_autosave(&autosave);
+        }
+    });
+    form_panel.append(&form_box);
+    form_panel.append(&add_form_field);
+    let form_scroll = scrolled(&form_panel);
+    form_scroll.set_vexpand(true);
+    form_scroll.set_min_content_height(150);
+    form_scroll.set_visible(false);
 
     let multipart_panel = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -275,23 +346,31 @@ pub(super) fn build_body_page(
 
     mode.connect_selected_notify({
         let editor_scroll = editor_scroll.clone();
+        let text_scroll = text_scroll.clone();
+        let form_scroll = form_scroll.clone();
         let multipart_scroll = multipart_scroll.clone();
         let autosave = autosave.clone();
         move |mode| {
-            editor_scroll.set_visible(mode.selected() == 1);
-            multipart_scroll.set_visible(mode.selected() == 2);
+            editor_scroll.set_visible(mode.selected() == BODY_MODE_JSON);
+            form_scroll.set_visible(mode.selected() == BODY_MODE_FORM_URL_ENCODED);
+            text_scroll.set_visible(mode.selected() == BODY_MODE_TEXT);
+            multipart_scroll.set_visible(mode.selected() == BODY_MODE_MULTIPART);
             request_autosave(&autosave);
         }
     });
     page.append(&mode);
     page.append(&editor_scroll);
+    page.append(&form_scroll);
+    page.append(&text_scroll);
     page.append(&multipart_scroll);
     (
         page,
         BodyWidgets {
             mode,
             json_editor: editor,
-            json_editor_state,
+            text_editor,
+            form_box,
+            form_rows,
             multipart_box,
             multipart_rows,
             autosave: autosave.clone(),
@@ -299,16 +378,16 @@ pub(super) fn build_body_page(
     )
 }
 
-fn configure_json_style_scheme(buffer: &sourceview5::Buffer) {
+fn configure_editor_style_scheme(buffer: &sourceview5::Buffer) {
     let Some(settings) = gtk::Settings::default() else {
         return;
     };
-    apply_json_style_scheme(buffer, &settings);
+    apply_editor_style_scheme(buffer, &settings);
     settings.connect_gtk_application_prefer_dark_theme_notify({
         let buffer = buffer.downgrade();
         move |settings| {
             if let Some(buffer) = buffer.upgrade() {
-                apply_json_style_scheme(&buffer, settings);
+                apply_editor_style_scheme(&buffer, settings);
             }
         }
     });
@@ -316,13 +395,13 @@ fn configure_json_style_scheme(buffer: &sourceview5::Buffer) {
         let buffer = buffer.downgrade();
         move |settings| {
             if let Some(buffer) = buffer.upgrade() {
-                apply_json_style_scheme(&buffer, settings);
+                apply_editor_style_scheme(&buffer, settings);
             }
         }
     });
 }
 
-fn apply_json_style_scheme(buffer: &sourceview5::Buffer, settings: &gtk::Settings) {
+fn apply_editor_style_scheme(buffer: &sourceview5::Buffer, settings: &gtk::Settings) {
     let scheme_id = json_style_scheme_id(
         settings.is_gtk_application_prefer_dark_theme(),
         settings.gtk_theme_name().as_deref(),
@@ -340,6 +419,76 @@ pub(super) fn json_style_scheme_id(prefer_dark: bool, theme_name: Option<&str>) 
     } else {
         "Adwaita"
     }
+}
+
+pub(super) fn add_form_urlencoded_row(
+    container: &GtkBox,
+    rows: &Rc<RefCell<Vec<FormWidgets>>>,
+    autosave: &AutosaveTrigger,
+) {
+    let row = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    let enabled = CheckButton::builder()
+        .active(true)
+        .tooltip_text("Send this form field")
+        .build();
+    let name = Entry::builder()
+        .placeholder_text("Key")
+        .hexpand(true)
+        .build();
+    let value = Entry::builder()
+        .placeholder_text("Value")
+        .hexpand(true)
+        .build();
+    let remove = Button::with_label("Remove");
+    set_accessible_label(&enabled, "Send this form field");
+    set_accessible_label(&name, "Form field key");
+    set_accessible_label(&value, "Form field value");
+    set_accessible_label(&remove, "Remove form field");
+    name.add_css_class("monospace");
+    value.add_css_class("monospace");
+    autosave_on_blur(&name, autosave);
+    autosave_on_blur(&value, autosave);
+    enabled.connect_toggled({
+        let autosave = autosave.clone();
+        move |_| request_autosave(&autosave)
+    });
+
+    row.append(&enabled);
+    row.append(&name);
+    row.append(&value);
+    row.append(&remove);
+    container.append(&row);
+    rows.borrow_mut().push(FormWidgets {
+        row: row.clone(),
+        enabled,
+        name,
+        value,
+    });
+    remove.connect_clicked({
+        let container = container.downgrade();
+        let rows = Rc::downgrade(rows);
+        let row = row.downgrade();
+        let autosave = autosave.clone();
+        move |_| {
+            let (Some(container), Some(rows), Some(row)) =
+                (container.upgrade(), rows.upgrade(), row.upgrade())
+            else {
+                return;
+            };
+            let index = {
+                let rows = rows.borrow();
+                rows.iter().position(|item| item.row == row)
+            };
+            if let Some(index) = index {
+                let removed = rows.borrow_mut().remove(index);
+                container.remove(&removed.row);
+                request_autosave(&autosave);
+            }
+        }
+    });
 }
 
 pub(super) fn add_multipart_row(
@@ -486,6 +635,17 @@ pub(super) fn buffer_text(view: &impl IsA<TextView>) -> String {
         .to_string()
 }
 
+fn set_source_text(view: &sourceview5::View, text: &str) {
+    let buffer = view
+        .buffer()
+        .downcast::<sourceview5::Buffer>()
+        .expect("GtkSourceView should use a GtkSourceBuffer");
+    buffer.set_enable_undo(false);
+    buffer.set_text(text);
+    buffer.set_enable_undo(true);
+    buffer.set_max_undo_levels(100);
+}
+
 pub(super) fn collect_request(
     method: &DropDown,
     url: &Entry,
@@ -506,9 +666,21 @@ pub(super) fn collect_request(
         })
         .collect();
     let body = match body_widgets.mode.selected() {
-        0 => RequestBody::None,
-        1 => RequestBody::Json(buffer_text(&body_widgets.json_editor)),
-        2 => RequestBody::Multipart(
+        BODY_MODE_NONE => RequestBody::None,
+        BODY_MODE_JSON => RequestBody::Json(buffer_text(&body_widgets.json_editor)),
+        BODY_MODE_FORM_URL_ENCODED => RequestBody::FormUrlEncoded(
+            body_widgets
+                .form_rows
+                .borrow()
+                .iter()
+                .map(|widgets| FormField {
+                    enabled: widgets.enabled.is_active(),
+                    name: widgets.name.text().to_string(),
+                    value: widgets.value.text().to_string(),
+                })
+                .collect(),
+        ),
+        BODY_MODE_MULTIPART => RequestBody::Multipart(
             body_widgets
                 .multipart_rows
                 .borrow()
@@ -524,6 +696,7 @@ pub(super) fn collect_request(
                 })
                 .collect(),
         ),
+        BODY_MODE_TEXT => RequestBody::Text(buffer_text(&body_widgets.text_editor)),
         _ => return Err("Select a request body mode.".to_owned()),
     };
     Ok(Request {
@@ -568,31 +741,59 @@ pub(super) fn apply_request(
 
     match &request.body {
         RequestBody::None => {
-            body_widgets.mode.set_selected(0);
-            json_editor::set_text(
-                &body_widgets.json_editor,
-                &body_widgets.json_editor_state,
-                "",
-            );
+            body_widgets.mode.set_selected(BODY_MODE_NONE);
+            set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.text_editor, "");
+            reset_form_urlencoded_rows(body_widgets, &[]);
             reset_multipart_rows(body_widgets, &[]);
         }
         RequestBody::Json(body) => {
-            body_widgets.mode.set_selected(1);
-            json_editor::set_text(
-                &body_widgets.json_editor,
-                &body_widgets.json_editor_state,
-                body,
-            );
+            body_widgets.mode.set_selected(BODY_MODE_JSON);
+            set_source_text(&body_widgets.json_editor, body);
+            set_source_text(&body_widgets.text_editor, "");
+            reset_form_urlencoded_rows(body_widgets, &[]);
+            reset_multipart_rows(body_widgets, &[]);
+        }
+        RequestBody::FormUrlEncoded(fields) => {
+            body_widgets.mode.set_selected(BODY_MODE_FORM_URL_ENCODED);
+            set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.text_editor, "");
+            reset_form_urlencoded_rows(body_widgets, fields);
+            reset_multipart_rows(body_widgets, &[]);
+        }
+        RequestBody::Text(body) => {
+            body_widgets.mode.set_selected(BODY_MODE_TEXT);
+            set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.text_editor, body);
+            reset_form_urlencoded_rows(body_widgets, &[]);
             reset_multipart_rows(body_widgets, &[]);
         }
         RequestBody::Multipart(fields) => {
-            body_widgets.mode.set_selected(2);
-            json_editor::set_text(
-                &body_widgets.json_editor,
-                &body_widgets.json_editor_state,
-                "",
-            );
+            body_widgets.mode.set_selected(BODY_MODE_MULTIPART);
+            set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.text_editor, "");
+            reset_form_urlencoded_rows(body_widgets, &[]);
             reset_multipart_rows(body_widgets, fields);
+        }
+    }
+}
+
+pub(super) fn reset_form_urlencoded_rows(body: &BodyWidgets, fields: &[FormField]) {
+    let old_rows = std::mem::take(&mut *body.form_rows.borrow_mut());
+    for widgets in old_rows {
+        body.form_box.remove(&widgets.row);
+    }
+
+    if fields.is_empty() {
+        add_form_urlencoded_row(&body.form_box, &body.form_rows, &body.autosave);
+        return;
+    }
+    for field in fields {
+        add_form_urlencoded_row(&body.form_box, &body.form_rows, &body.autosave);
+        if let Some(widgets) = body.form_rows.borrow().last() {
+            widgets.enabled.set_active(field.enabled);
+            widgets.name.set_text(&field.name);
+            widgets.value.set_text(&field.value);
         }
     }
 }

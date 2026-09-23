@@ -17,7 +17,9 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     collections::{CollectionRequest, CollectionSummary},
-    models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody},
+    models::{
+        FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
+    },
 };
 
 pub const COLLECTION_SCHEMA: &str =
@@ -280,29 +282,44 @@ fn import_body(
     match body.get("mode").and_then(Value::as_str) {
         Some("raw") => {
             let raw = body.get("raw").and_then(Value::as_str).unwrap_or_default();
-            let language_is_json = body
+            let language = body
                 .get("options")
                 .and_then(|options| options.get("raw"))
                 .and_then(|raw| raw.get("language"))
-                .and_then(Value::as_str)
-                .is_some_and(|language| language.eq_ignore_ascii_case("json"));
-            let content_type_is_json = headers.iter().any(|header| {
-                header.enabled
-                    && header.name.eq_ignore_ascii_case("content-type")
-                    && header
+                .and_then(Value::as_str);
+            let language_is_json =
+                language.is_some_and(|language| language.eq_ignore_ascii_case("json"));
+            let content_type = headers.iter().find_map(|header| {
+                (header.enabled && header.name.eq_ignore_ascii_case("content-type")).then(|| {
+                    header
                         .value
+                        .split(';')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
                         .to_ascii_lowercase()
-                        .contains("application/json")
+                })
             });
+            let content_type_is_json = content_type
+                .as_deref()
+                .is_some_and(|value| value == "application/json" || value.ends_with("+json"));
             if language_is_json
                 || content_type_is_json
-                || serde_json::from_str::<Value>(raw).is_ok()
+                || (language.is_none()
+                    && content_type.is_none()
+                    && serde_json::from_str::<Value>(raw).is_ok())
             {
                 RequestBody::Json(raw.to_owned())
             } else {
-                RequestBody::None
+                RequestBody::Text(raw.to_owned())
             }
         }
+        Some("urlencoded") => RequestBody::FormUrlEncoded(import_urlencoded(
+            body.get("urlencoded")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        )),
         Some("formdata") => RequestBody::Multipart(
             body.get("formdata")
                 .and_then(Value::as_array)
@@ -312,6 +329,24 @@ fn import_body(
         Some(mode) if mode != "none" => RequestBody::None,
         _ => RequestBody::None,
     }
+}
+
+fn import_urlencoded(fields: &[Value]) -> Vec<FormField> {
+    fields
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|field| {
+            Some(FormField {
+                enabled: field.get("disabled").and_then(Value::as_bool) != Some(true),
+                name: field.get("key")?.as_str()?.to_owned(),
+                value: field
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+        })
+        .collect()
 }
 
 fn import_formdata(fields: &[Value], source_directory: &Path) -> Vec<MultipartField> {
@@ -385,6 +420,18 @@ fn export_request(request: &CollectionRequest, destination_directory: &Path) -> 
             "raw": source,
             "options": { "raw": { "language": "json" } },
         })),
+        RequestBody::FormUrlEncoded(fields) => Some(json!({
+            "mode": "urlencoded",
+            "urlencoded": fields
+                .iter()
+                .map(export_urlencoded)
+                .collect::<Vec<_>>(),
+        })),
+        RequestBody::Text(source) => Some(json!({
+            "mode": "raw",
+            "raw": source,
+            "options": { "raw": { "language": "text" } },
+        })),
         RequestBody::Multipart(fields) => Some(json!({
             "mode": "formdata",
             "formdata": fields
@@ -418,6 +465,18 @@ fn export_formdata(field: &MultipartField, destination_directory: &Path) -> Valu
             })
         }
     };
+    if !field.enabled {
+        exported["disabled"] = Value::Bool(true);
+    }
+    exported
+}
+
+fn export_urlencoded(field: &FormField) -> Value {
+    let mut exported = json!({
+        "key": field.name,
+        "value": field.value,
+        "type": "text",
+    });
     if !field.enabled {
         exported["disabled"] = Value::Bool(true);
     }
@@ -552,6 +611,53 @@ mod tests {
                 value: MultipartValue::File(PathBuf::from("/data/collection/files/avatar.png")),
             }
         );
+    }
+
+    #[test]
+    fn imports_and_exports_form_and_plain_text_bodies() {
+        let source = format!(
+            r#"{{
+                "info": {{"name": "Text bodies", "schema": "{COLLECTION_SCHEMA}"}},
+                "item": [
+                    {{"name": "Form", "request": {{
+                        "method": "POST", "url": "https://example.com/form",
+                        "body": {{"mode": "urlencoded", "urlencoded": [
+                            {{"key": "name", "value": "Pakpos", "type": "text"}},
+                            {{"key": "tag", "value": "one two", "type": "text"}},
+                            {{"key": "ignored", "value": "value", "type": "text", "disabled": true}}
+                        ]}}
+                    }}}},
+                    {{"name": "Text", "request": {{
+                        "method": "POST", "url": "https://example.com/text",
+                        "body": {{"mode": "raw", "raw": "42", "options": {{"raw": {{"language": "text"}}}}}}
+                    }}}}
+                ]
+            }}"#
+        );
+
+        let imported = import_collection(&source, Path::new("/tmp")).unwrap();
+        assert_eq!(
+            imported.requests[0].request.body,
+            RequestBody::FormUrlEncoded(vec![
+                FormField::enabled("name", "Pakpos"),
+                FormField::enabled("tag", "one two"),
+                FormField {
+                    enabled: false,
+                    name: "ignored".to_owned(),
+                    value: "value".to_owned(),
+                },
+            ])
+        );
+        assert_eq!(
+            imported.requests[1].request.body,
+            RequestBody::Text("42".to_owned())
+        );
+
+        let exported =
+            export_collection(&imported.summary, &imported.requests, Path::new("/tmp")).unwrap();
+        let round_trip = import_collection(&exported, Path::new("/tmp")).unwrap();
+        assert_eq!(round_trip.requests[0].request, imported.requests[0].request);
+        assert_eq!(round_trip.requests[1].request, imported.requests[1].request);
     }
 
     #[test]

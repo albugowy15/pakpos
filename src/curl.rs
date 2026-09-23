@@ -15,7 +15,9 @@ use std::{
     fmt,
 };
 
-use crate::models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody};
+use crate::models::{
+    FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurlImport {
@@ -60,11 +62,38 @@ pub fn to_command(request: impl Borrow<Request>) -> Result<String, CurlError> {
         shell_quote_into(&mut command, &value);
     }
 
+    let has_content_type = request.headers.iter().any(|header| {
+        header.enabled
+            && !(header.name.trim().is_empty() && header.value.is_empty())
+            && header.name.eq_ignore_ascii_case("content-type")
+    });
+    let generated_content_type = match &request.body {
+        RequestBody::Json(_) => Some("application/json"),
+        RequestBody::FormUrlEncoded(_) => Some("application/x-www-form-urlencoded"),
+        RequestBody::Text(_) => Some("text/plain"),
+        RequestBody::None | RequestBody::Multipart(_) => None,
+    };
+    if !has_content_type && let Some(content_type) = generated_content_type {
+        command.push_str(" --header ");
+        shell_quote_into(&mut command, &format!("Content-Type: {content_type}"));
+    }
+
     match &request.body {
         RequestBody::None => {}
-        RequestBody::Json(body) => {
+        RequestBody::Json(body) | RequestBody::Text(body) => {
             command.push_str(" --data-raw ");
             shell_quote_into(&mut command, body);
+        }
+        RequestBody::FormUrlEncoded(fields) => {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for field in fields
+                .iter()
+                .filter(|field| field.enabled && !(field.name.is_empty() && field.value.is_empty()))
+            {
+                serializer.append_pair(&field.name, &field.value);
+            }
+            command.push_str(" --data-raw ");
+            shell_quote_into(&mut command, &serializer.finish());
         }
         RequestBody::Multipart(fields) => {
             for field in fields
@@ -228,30 +257,61 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
             "Pakpos cannot import a cURL command that mixes data and multipart form options.",
         ));
     }
+    if json_option {
+        add_header_if_missing(&mut headers, "Content-Type", "application/json");
+        add_header_if_missing(&mut headers, "Accept", "application/json");
+    }
     let body = if !multipart_fields.is_empty() {
         RequestBody::Multipart(multipart_fields)
     } else if data_parts.is_empty() {
         RequestBody::None
     } else {
         let text = data_parts.join("&");
-        crate::models::validate_json(&text).map_err(|error| {
-            CurlError::new(format!(
-                "Pakpos currently imports cURL bodies as JSON, but this body is invalid at line {}, column {}: {error}",
-                error.line(),
-                error.column()
-            ))
-        })?;
-        RequestBody::Json(text)
+        let content_type = headers
+            .iter()
+            .find(|header| header.enabled && header.name.eq_ignore_ascii_case("content-type"))
+            .map(|header| {
+                header
+                    .value
+                    .split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+            });
+        let is_json = json_option
+            || content_type
+                .as_deref()
+                .is_some_and(|value| value == "application/json" || value.ends_with("+json"))
+            || (content_type.is_none() && crate::models::validate_json(&text).is_ok());
+        if is_json {
+            crate::models::validate_json(&text).map_err(|error| {
+                CurlError::new(format!(
+                    "The JSON body is invalid at line {}, column {}: {error}",
+                    error.line(),
+                    error.column()
+                ))
+            })?;
+            RequestBody::Json(text)
+        } else if content_type.as_deref() == Some("text/plain") {
+            RequestBody::Text(text)
+        } else if content_type.as_deref() == Some("application/x-www-form-urlencoded")
+            || content_type.is_none()
+        {
+            RequestBody::FormUrlEncoded(
+                url::form_urlencoded::parse(text.as_bytes())
+                    .map(|(name, value)| FormField::enabled(name, value))
+                    .collect(),
+            )
+        } else {
+            RequestBody::Text(text)
+        }
     };
 
-    if json_option {
-        add_header_if_missing(&mut headers, "Content-Type", "application/json");
-        add_header_if_missing(&mut headers, "Accept", "application/json");
-    }
-    let inferred_method = if matches!(body, RequestBody::Json(_) | RequestBody::Multipart(_)) {
-        HttpMethod::Post
-    } else {
+    let inferred_method = if matches!(body, RequestBody::None) {
         HttpMethod::Get
+    } else {
+        HttpMethod::Post
     };
     let request = Request {
         method: method.unwrap_or(inferred_method),
@@ -312,7 +372,7 @@ fn parse_header(value: &str) -> Result<HeaderRow, CurlError> {
 fn parse_inline_data<'a>(value: &'a str, option: &str) -> Result<&'a str, CurlError> {
     if value.starts_with('@') {
         return Err(CurlError::new(format!(
-            "File-backed data in {option} is not supported. Paste the JSON body directly."
+            "File-backed data in {option} is not supported. Paste the request body directly."
         )));
     }
     Ok(value)
@@ -553,7 +613,11 @@ mod tests {
 
         assert_eq!(imported.request.method, request.method);
         assert_eq!(imported.request.url, request.url);
-        assert_eq!(&imported.request.headers, &request.headers[..2]);
+        assert_eq!(&imported.request.headers[..2], &request.headers[..2]);
+        assert_eq!(
+            imported.request.headers[2],
+            HeaderRow::enabled("Content-Type", "application/json")
+        );
         assert_eq!(imported.request.body, request.body);
     }
 
@@ -573,9 +637,43 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unrepresentable_body_without_changing_editor() {
-        let error = from_command("curl -d 'plain text' https://example.com").unwrap_err();
-        assert!(error.to_string().contains("imports cURL bodies as JSON"));
+    fn imports_form_and_plain_text_bodies() {
+        let form = from_command("curl -d 'name=Pakpos&tag=one+two' https://example.com").unwrap();
+        assert_eq!(
+            form.request.body,
+            RequestBody::FormUrlEncoded(vec![
+                FormField::enabled("name", "Pakpos"),
+                FormField::enabled("tag", "one two"),
+            ])
+        );
+
+        let text =
+            from_command("curl -H 'Content-Type: text/plain' -d 'first line' https://example.com")
+                .unwrap();
+        assert_eq!(
+            text.request.body,
+            RequestBody::Text("first line".to_owned())
+        );
+    }
+
+    #[test]
+    fn exports_default_content_types_for_textual_bodies() {
+        for (body, expected_content_type) in [
+            (
+                RequestBody::FormUrlEncoded(vec![FormField::enabled("name", "Pakpos")]),
+                "application/x-www-form-urlencoded",
+            ),
+            (RequestBody::Text("hello".to_owned()), "text/plain"),
+        ] {
+            let command = to_command(Request {
+                method: HttpMethod::Post,
+                url: "https://example.com".to_owned(),
+                body,
+                ..Request::default()
+            })
+            .unwrap();
+            assert!(command.contains(&format!("Content-Type: {expected_content_type}")));
+        }
     }
 
     #[test]

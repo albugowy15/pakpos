@@ -19,31 +19,33 @@ cargo run
 ```
 
 The current implementation supports GET, POST, PUT, PATCH, DELETE, and HEAD;
-ordered enabled headers; None and JSON bodies; URL, header, and JSON validation;
-30-second request timeouts; cancellation; redirects disabled; and a response view
-with headers and a bounded 5 MiB body preview. Validation and transport failures use
+ordered enabled headers; None, JSON, URL-encoded form, plain-text, and multipart
+bodies; URL, header, and JSON validation; 30-second request timeouts; cancellation;
+redirects disabled; and a response view with headers and a bounded 5 MiB body
+preview. Validation and transport failures use
 transient overlay toasts instead of a permanent response status label. The
 menu attached to Send can copy the current request as cURL or populate the editor
 from a pasted cURL command. The current parser supports the six Pakpos methods,
-repeated literal headers, inline JSON bodies, and multipart text/file fields without
+repeated literal headers, inline textual bodies, and multipart text/file fields without
 executing the command through a shell. Multipart rows support enabled/disabled text
 and file values, repeated names, native file selection, validation, inferred media
 types, and streamed file reads.
+
+URL-encoded forms use ordered, enableable key/value rows and are encoded only at
+the send boundary. Plain-text bodies use a GtkSourceView editor with the same base
+presentation and undo support as JSON, without JSON-specific assistance.
 
 Response handling classifies JSON, text, HTML source, attachments, and binary data.
 Supported text charsets are decoded with visible replacement/unsupported-charset
 notices. Attachments, binary bodies, and text exceeding the 5 MiB preview limit are
 streamed through collision-safe partial files into the OS-configured Downloads
-directory. Flat SQLite collections, Postman v2.1 import/export, and JSON editor
-assistance are implemented.
+directory. Flat SQLite collections, Postman v2.1 import/export, and JSON source
+editing are implemented.
 
-The JSON editor uses GtkSourceView for JSON syntax highlighting, bracket matching,
-two-space Tab/Shift+Tab indentation, smart backspace, and undo/redo. Pakpos completes
-`{}` and `[]` outside JSON strings. Enter retains indentation, expands empty pairs,
-and adds one level after an opening bracket. Typed generated closers are skipped,
-Backspace removes an untouched generated pair, and whitespace-only closing lines
-align with their matching opener. Programmatic loads and cURL imports preserve their
-source text and reset the undo baseline.
+The JSON editor loads GtkSourceView's installed JSON language specification for
+syntax highlighting. It also shows line numbers, uses the adaptive editor style
+scheme, and keeps native indentation. Pakpos installs no custom completion or key
+handling.
 
 The collection milestone uses one application-managed embedded SQLite
 database in the platform user-data directory. Native persistence and Postman v2.1
@@ -85,7 +87,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-On 2026-09-20, these checks passed: 83 headless unit tests, one allocation regression
+These checks pass with 89 headless unit tests, one allocation regression
 test, and three Postman interoperability tests. The interoperability suite imports a
 representative fixture, validates exports against a vendored copy of the official
 v2.1 schema, checks supported-field round trips, and sends original and round-tripped

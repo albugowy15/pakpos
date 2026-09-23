@@ -2,8 +2,8 @@
 //!
 //! [`CollectionStore`] owns one connection and exposes collection-level
 //! operations rather than table-specific repositories. A save validates
-//! ownership and commits its collection, node, request, header, multipart, and
-//! deletion changes in one transaction, so callers never observe partial state.
+//! ownership and commits its collection, node, request, header, form, multipart,
+//! and deletion changes in one transaction, so callers never observe partial state.
 //!
 //! Normal reads are deliberately lazy: collection lists return summaries,
 //! request lists return nodes plus method metadata, and full request details are
@@ -35,7 +35,9 @@ use rusqlite::trace::{TraceEvent, TraceEventCodes};
 
 use crate::{
     collections::{CollectionNode, CollectionRequest, CollectionSummary},
-    models::{HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody},
+    models::{
+        FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
+    },
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -321,6 +323,10 @@ impl CollectionStore {
         let body = match body_mode.as_str() {
             "none" => RequestBody::None,
             "json" => RequestBody::Json(json.unwrap_or_default()),
+            "form_urlencoded" => {
+                RequestBody::FormUrlEncoded(self.load_form_urlencoded_fields(request_id)?)
+            }
+            "text" => RequestBody::Text(json.unwrap_or_default()),
             "multipart" => RequestBody::Multipart(self.load_multipart_fields(request_id)?),
             value => {
                 return Err(StorageError::InvalidData {
@@ -433,6 +439,30 @@ impl CollectionStore {
             })
         })
         .collect()
+    }
+
+    fn load_form_urlencoded_fields(
+        &self,
+        request_id: Uuid,
+    ) -> Result<Vec<FormField>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT enabled, name, value FROM form_urlencoded_fields
+                 WHERE request_id = ?1 ORDER BY position",
+            )
+            .map_err(StorageError::Database)?;
+        statement
+            .query_map([SqlId::new(request_id)], |row| {
+                Ok(FormField {
+                    enabled: row.get(0)?,
+                    name: row.get(1)?,
+                    value: row.get(2)?,
+                })
+            })
+            .map_err(StorageError::Database)?
+            .map(|row| row.map_err(StorageError::Database))
+            .collect()
     }
 
     pub fn save_collection(
@@ -586,6 +616,8 @@ fn save_request(
     let (body_mode, json_body) = match &request.request.body {
         RequestBody::None => ("none", None),
         RequestBody::Json(body) => ("json", Some(body.as_str())),
+        RequestBody::FormUrlEncoded(_) => ("form_urlencoded", None),
+        RequestBody::Text(body) => ("text", Some(body.as_str())),
         RequestBody::Multipart(_) => ("multipart", None),
     };
     transaction
@@ -629,6 +661,31 @@ fn save_request(
                 ],
             )
             .map_err(StorageError::Database)?;
+    }
+
+    transaction
+        .execute(
+            "DELETE FROM form_urlencoded_fields WHERE request_id = ?1",
+            [&request_id],
+        )
+        .map_err(StorageError::Database)?;
+    if let RequestBody::FormUrlEncoded(fields) = &request.request.body {
+        for (position, field) in fields.iter().enumerate() {
+            transaction
+                .execute(
+                    "INSERT INTO form_urlencoded_fields
+                        (request_id, position, enabled, name, value)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        request_id,
+                        position as u32,
+                        field.enabled,
+                        field.name,
+                        field.value,
+                    ],
+                )
+                .map_err(StorageError::Database)?;
+        }
     }
 
     transaction
