@@ -358,7 +358,7 @@ The UI is an adapter around application state. It owns GTK widgets, signal handl
 
 - header bar with collection actions and collection picker;
 - horizontal pane separating the sidebar and main content;
-- vertical pane separating request and response areas;
+- switchable vertical or horizontal pane separating request and response areas;
 - method, URL, Send/Cancel, headers, and body controls;
 - response Body, Raw, and Headers views;
 - toast overlay for transient request errors and messages.
