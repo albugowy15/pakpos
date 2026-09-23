@@ -1287,6 +1287,7 @@ dependencies = [
  "shell-words",
  "sourceview5",
  "tokio",
+ "url",
  "uuid",
 ]
 

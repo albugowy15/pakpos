@@ -9,8 +9,13 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 - Send GET, POST, PUT, PATCH, DELETE, and HEAD requests over HTTP or HTTPS.
 - Enter ordered request headers, including repeated names, and enable or disable each row.
 - Send a JSON body without reformatting its source text.
-- Edit JSON with GtkSourceView syntax highlighting that follows the GTK light/dark theme, bracket matching, two-space indentation, automatic object/array pair completion, closer alignment, and native undo/redo.
-- Send ordered multipart text and file fields, including repeated names. File uploads are streamed with bounded memory use.
+- Send ordered URL-encoded key/value fields and edit plain text in GtkSourceView,
+  with automatic default content types.
+- Edit JSON with GtkSourceView syntax highlighting that follows the GTK light/dark
+  theme, line numbers, bracket matching, two-space indentation, automatic
+  object/array pair completion, closer alignment, and native undo/redo.
+- Send ordered multipart text and file fields, including repeated names. File uploads
+  are streamed with bounded memory use.
 - Validate URLs, headers, and JSON before sending.
 - Cancel an in-flight request or allow it to time out after 30 seconds.
 - Inspect response headers and a bounded 5 MiB response preview. Validation and transport errors appear as transient, dismissible toasts.
@@ -18,7 +23,9 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 - Display plain text and HTML source with supported charset decoding.
 - Stream attachments, binary responses, and oversized text responses to the configured Downloads directory without silently overwriting files.
 - Copy the current request as a shell-safe cURL command.
-- Paste a supported cURL command to populate the method, URL, repeated headers, inline JSON body, and multipart text/file fields. Pasted commands are parsed as data and are never executed through a shell.
+- Paste a supported cURL command to populate the method, URL, repeated headers,
+  textual body, and multipart text/file fields. Pasted commands are parsed as data
+  and are never executed through a shell.
 - Create, select, automatically save, and reopen local collections in embedded SQLite storage.
 - Search the active collection by request name and use request context menus to create, rename, duplicate, delete, or copy a request as cURL. Request details are loaded from storage only when selected.
 - Import Postman Collection v2.1 files into flat request lists and export collections as root-level Postman requests. Postman-only behavior is ignored.
@@ -28,23 +35,26 @@ not retry requests.
 
 ## Status
 
-Updated 2026-09-20. Pakpos supports scratch requests, assisted JSON editing, and native persistence for flat collections of requests and Postman v2.1 import/export. The initial release still requires performance measurements and manual Postman and GTK verification.
+Updated 2026-09-20. Pakpos supports scratch requests, assisted JSON editing, and
+native persistence for flat collections of requests and Postman v2.1 import/export.
+The initial release still requires performance measurements and manual Postman and
+GTK verification.
 
-| Area                                                                      | Progress                                                                                           |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Native GTK request editor and HTTP execution                              | Available                                                                                          |
-| Headers, JSON bodies, cancellation, and response inspection               | Available                                                                                          |
-| Copy and paste cURL                                                       | Available for supported headers, JSON, and multipart fields                                        |
-| Multipart form-data and streamed file uploads                             | Available                                                                                          |
-| Response classification, downloads, and charset handling                  | Available                                                                                          |
-| SQLite collections, request management, search, and autosave              | Available; flat request lists with lazy detail loading                                             |
-| Application, UI, and runtime separation                                   | Implemented; HTTP and SQLite work run off the GTK main thread                                      |
-| Allocation reductions and GTK ownership fixes                             | Implemented; audit and regression coverage added                                                   |
-| GtkSourceView JSON editor, indentation, bracket completion, and undo/redo | Available                                                                                          |
-| Postman v2.1 import/export                                                | Available for supported request fields; folders flatten on import                                  |
-| Automated Postman interoperability verification                           | Fixture import, official-schema validation, semantic round trip, and local-server wire checks pass |
-| Release memory and storage performance measurements                       | Storage workload measured; full-application memory scenarios pending                               |
-| Manual accessibility and Postman desktop verification                     | GTK pass complete; Postman desktop verification pending                                            |
+| Area | Progress |
+| --- | --- |
+| Native GTK request editor and HTTP execution | Available |
+| Headers, JSON/form/plain-text bodies, cancellation, and response inspection | Available |
+| Copy and paste cURL | Available for supported headers, textual bodies, and multipart fields |
+| Multipart form-data and streamed file uploads | Available |
+| Response classification, downloads, and charset handling | Available |
+| SQLite collections, request management, search, and autosave | Available; flat request lists with lazy detail loading |
+| Application, UI, and runtime separation | Implemented; HTTP and SQLite work run off the GTK main thread |
+| Allocation reductions and GTK ownership fixes | Implemented; audit and regression coverage added |
+| GtkSourceView JSON editor, highlighting, line numbers, pair completion, indentation, and undo/redo | Available |
+| Postman v2.1 import/export | Available for supported request fields; folders flatten on import |
+| Automated Postman interoperability verification | Fixture import, official-schema validation, semantic round trip, and local-server wire checks pass |
+| Release memory and storage performance measurements | Storage workload measured; full-application memory scenarios pending |
+| Manual accessibility and Postman desktop verification | GTK pass complete; Postman desktop verification pending |
 
 ## Installation
 
@@ -107,6 +117,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo build --release
 ```
+
+Formatting and strict Clippy checks pass. Coverage
+includes application state, JSON editing, request validation, cURL conversion,
+response handling, local HTTP integration, transactional SQLite storage, Postman
+schema validation, and supported-field round trips. One GTK widget-lifetime test is
+excluded from the default headless suite; see
+[development checks](docs/development.md#verification) for running it with a display.
 
 ## Collection storage
 

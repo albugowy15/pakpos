@@ -7,7 +7,7 @@ was updated on 2026-09-20.
 ## Implementation progress
 
 The core HTTP workflow, multipart uploads, response classification/downloads, cURL
-sharing, assisted JSON editing, autosaved flat SQLite collections, and Postman v2.1
+sharing, JSON source editing, autosaved flat SQLite collections, and Postman v2.1
 import/export are implemented.
 Collection UI includes creation and selection, request search, and request creation,
 duplication, renaming, and confirmed deletion. Request details load on selection;
@@ -19,13 +19,9 @@ reduces validation/export/response copies, consumes no-op autosave flags, and br
 GTK ownership cycles. Measurements and remaining costs are recorded in the
 [allocation audit](docs/memory-allocation-audit.md).
 
-The GtkSourceView JSON editor provides syntax highlighting, bracket matching,
-two-space indentation, smart backspace, and native undo/redo. Pakpos completes nested
-object/array pairs, skips generated closers, removes untouched pairs together, and
-aligns closers with their opening line. Its structural behavior is disabled inside
-strings and handles escaped quotes and backslashes. Tab and Shift+Tab also operate on
-selected lines. Loading and cURL import preserve the supplied source and establish a
-fresh undo baseline.
+The GtkSourceView JSON editor loads the installed JSON language specification for
+syntax highlighting and provides line numbers, an adaptive style scheme, native
+indentation, and undo/redo. Pakpos does not add custom completion or key handling.
 
 Postman interoperability coverage uses a representative v2.1 fixture and a vendored
 copy of the official schema. It verifies folder flattening, supported-field round
@@ -129,8 +125,7 @@ Implementation constraints:
 - Retain only the current response. Release previous response data when replacing
   it or switching requests, and release abandoned request tasks and transfer buffers
   after completion or cancellation. Do not build an implicit response history.
-- Keep JSON indentation and bracket completion local to the native editor; do not
-  introduce a language server or browser runtime for these conveniences.
+- Keep JSON editing native; do not introduce a language server or browser runtime.
 - Avoid unbounded caches, background services, and duplicate collection models.
   Load collection and request-list metadata without eagerly loading every request body.
   Load the active request on demand, and do not keep the full imported Postman
@@ -150,7 +145,7 @@ owner review; do not silently weaken limits or remove required features to meet 
 | --- | --- |
 | Requests | GET, POST, PUT, PATCH, DELETE, HEAD over HTTP and HTTPS |
 | Headers | Editable, ordered headers with enable/disable controls |
-| Request body | None, JSON, and multipart/form-data with text and file fields |
+| Request body | None, JSON, application/x-www-form-urlencoded, text/plain, and multipart/form-data with text and file fields |
 | Responses | Headers and readable body, with validation and transport errors shown as toasts |
 | Response formats | JSON, plain text, HTML source, and automatic file downloads |
 | Collections | Create, name, organize, autosave locally, and reopen saved requests |
@@ -223,29 +218,15 @@ allowed, including arrays and scalar values. Send the editor's UTF-8 text unchan
 do not reformat it when sending. Add `Content-Type: application/json` unless the user
 supplies an enabled Content-Type header.
 
-The JSON editor must provide these editing conveniences, including while the JSON
-is incomplete or temporarily invalid:
+The JSON editor uses GtkSourceView's installed JSON language specification for
+syntax highlighting. It shows line numbers and keeps GtkSourceView's native
+indentation, but adds no Pakpos-specific completion, pair deletion, or key handling.
+Pasting or loading JSON preserves the supplied text.
 
-- **Automatic indentation:** Use two spaces per indentation level, never literal
-  tabs. Enter retains the current line's indentation and adds one level after an
-  opening `{` or `[` outside a string. When Enter is pressed between a matching
-  empty pair, create an indented blank line for the cursor and place the closing
-  bracket on the following line, aligned with the enclosing level. A closing bracket
-  typed on an otherwise whitespace-only line aligns with its matching opening level.
-  Tab inserts one two-space indentation level; Shift+Tab removes one leading level.
-- **Automatic bracket completion:** Typing `{` or `[` outside a JSON string inserts
-  its matching `}` or `]` and leaves the cursor between them. Typing the matching
-  closing bracket immediately before an automatically inserted closer moves past it
-  instead of inserting a duplicate. Backspace between an untouched automatically
-  inserted pair removes both brackets. Nested objects and arrays must work together.
-- **Context-aware editing:** Brackets inside strings are literal text and must not
-  trigger completion or indentation changes. Account for escaped quotes and
-  backslashes when determining string boundaries. Pasting or loading JSON preserves
-  the supplied text rather than triggering completions for each character. Normal
-  undo/redo must restore both the text and cursor coherently for assisted edits.
-
-A separate whole-document formatting command is optional; automatic indentation
-and bracket completion are required even without one.
+**Form URL Encoded:** Provide ordered rows with an enabled checkbox, key, value,
+and remove action. Allow repeated and empty keys or values, ignore blank placeholder
+rows, and encode enabled rows as `application/x-www-form-urlencoded` only when
+sending.
 
 **Multipart:** Provide ordered rows with an enabled checkbox, field name, text/file
 type, value or file picker, and remove action. Allow repeated field names and empty
@@ -256,6 +237,11 @@ boundary through the HTTP library. Block sending with a clear correction message
 if a manually enabled Content-Type conflicts with generated multipart framing;
 do not silently send an invalid boundary. Include file names and use an appropriate
 MIME type when known, otherwise `application/octet-stream`.
+
+**Plain Text:** Provide a multiline GtkSourceView editor with a monospace,
+theme-aware presentation, line numbers, indentation settings, and undo/redo support.
+Do not apply JSON syntax validation or a JSON language definition. Send
+the UTF-8 source unchanged with `Content-Type: text/plain` unless overridden.
 
 Body selection is independent of method; do not silently discard a configured body.
 Changing modes must retain edits during the current editing session, but only the
@@ -364,7 +350,8 @@ Before switching collections or closing, flush pending collection changes withou
 manual confirmation prompt. Confirm deletion of a request. No recent-file system is required.
 
 Persist request names, methods, URLs, ordered headers and enabled states, selected
-body mode, JSON text, multipart fields/types/enabled states, and file references.
+body mode, textual body source, URL-encoded fields/enabled states, multipart
+fields/types/enabled states, and file references.
 Do not persist response bodies or download contents. On Postman import, resolve a
 relative multipart file reference against the imported file's directory and retain
 enough source context to target the same file later. On export to another directory,
@@ -412,8 +399,9 @@ the [official v2.1 schema documentation](https://schema.postman.com/json/collect
 
 The supported mapping includes request names, the six methods,
 URLs represented as strings or structured objects, headers and disabled flags,
-raw JSON bodies, and form-data text/file entries. Export JSON body mode as `raw`
-with the JSON language hint; export multipart as `formdata`. Preserve effective
+raw JSON/plain-text bodies, URL-encoded forms, and form-data text/file entries.
+Export JSON and plain text as `raw`, URL-encoded bodies as `urlencoded`, and
+multipart as `formdata`. Preserve effective
 query strings, repeated fields, ordering, and disabled flags across round trips.
 Normalize structured URLs without dropping query entries or changing escaping.
 Flatten imported folders into the collection request list in source order. Export
@@ -498,11 +486,8 @@ The initial release is complete when the following are demonstrated:
   headers, and body. HEAD correctly displays no response body.
 - Manual Authorization headers reach the server unchanged; disabled headers do not.
 - JSON scalars/objects/arrays send correctly; malformed JSON is reported before send.
-- JSON editing inserts two-space indentation on Enter, expands empty bracket pairs
-  onto correctly indented lines, aligns closing brackets, and supports Tab/Shift+Tab.
-  Object and array pairs complete automatically, typed closers skip generated ones,
-  and Backspace removes untouched pairs. Verify nested pairs, brackets inside strings,
-  escaped quotes/backslashes, incomplete JSON, paste/load preservation, and undo/redo.
+- JSON editing uses the installed GtkSourceView JSON language for highlighting,
+  shows line numbers, and does not install custom completion or indentation handling.
 - Multipart text, repeated names, and file bytes arrive correctly; missing files and
   Content-Type conflicts give actionable errors.
 - JSON, text, HTML source, malformed JSON, empty responses, 4xx/5xx, binary responses,
