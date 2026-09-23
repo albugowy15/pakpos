@@ -5,9 +5,10 @@
 //! user edits; [`Request::validated`] is the boundary that rejects incomplete or
 //! unsafe values, removes disabled placeholder rows, and produces sendable data.
 //!
-//! Header and multipart vectors preserve order, duplicates, and enabled state.
-//! JSON source is stored as text rather than a value tree so formatting survives
-//! round trips and validation does not require a second payload-sized copy.
+//! Header, URL-form, and multipart vectors preserve order, duplicates, and enabled state.
+//! Textual request bodies are stored as source text rather than parsed values so
+//! formatting survives round trips and JSON validation does not require a second
+//! payload-sized copy.
 
 use std::{fmt, path::PathBuf, str::FromStr, time::Duration};
 
@@ -116,7 +117,30 @@ pub enum RequestBody {
     #[default]
     None,
     Json(String),
+    FormUrlEncoded(Vec<FormField>),
+    Text(String),
     Multipart(Vec<MultipartField>),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormField {
+    pub enabled: bool,
+    pub name: String,
+    pub value: String,
+}
+
+impl FormField {
+    pub fn enabled(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+
+    fn is_blank(&self) -> bool {
+        self.name.is_empty() && self.value.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +206,9 @@ impl Request {
         if let RequestBody::Multipart(fields) = &mut self.body {
             fields.retain(|field| field.enabled && !field.is_blank());
         }
+        if let RequestBody::FormUrlEncoded(fields) = &mut self.body {
+            fields.retain(|field| field.enabled && !field.is_blank());
+        }
         Ok(self)
     }
 
@@ -232,6 +259,7 @@ impl Request {
                     message: error.to_string(),
                 })?;
             }
+            RequestBody::FormUrlEncoded(_) | RequestBody::Text(_) => {}
             RequestBody::Multipart(fields) => {
                 if self.headers.iter().any(|header| {
                     header.enabled
@@ -554,6 +582,30 @@ mod tests {
             value.body = RequestBody::Json(json.to_owned());
             value.validated().unwrap();
         }
+    }
+
+    #[test]
+    fn validation_filters_disabled_and_blank_urlencoded_fields() {
+        let mut value = request("https://example.com/form");
+        value.body = RequestBody::FormUrlEncoded(vec![
+            FormField::enabled("tag", "one"),
+            FormField {
+                enabled: false,
+                name: "hidden".to_owned(),
+                value: "ignored".to_owned(),
+            },
+            FormField::default(),
+            FormField::enabled("tag", "two words"),
+        ]);
+
+        let request = value.validated().unwrap();
+        assert_eq!(
+            request.body,
+            RequestBody::FormUrlEncoded(vec![
+                FormField::enabled("tag", "one"),
+                FormField::enabled("tag", "two words"),
+            ])
+        );
     }
 
     #[test]

@@ -6,7 +6,10 @@
 //! default headless suite and documents the command needed to run it manually.
 
 use super::*;
-use editor::{EditorWidgetHandles, add_header_row, add_multipart_row, json_style_scheme_id};
+use editor::{
+    EditorWidgetHandles, add_form_urlencoded_row, add_header_row, add_multipart_row,
+    json_style_scheme_id,
+};
 use pakpos::{app::CollectionSession, models::Request};
 use sidebar::{build_request_context_menu, render_request_buttons};
 use sourceview5::prelude::*;
@@ -65,20 +68,33 @@ fn widget_lifetimes() {
     assert_has_accessible_label(&header.value);
     assert_has_accessible_label(&editor.body.mode);
     assert_has_accessible_label(&editor.body.json_editor);
+    assert_has_accessible_label(&editor.body.text_editor);
+    let form = editor.body.form_rows.borrow()[0].clone();
+    assert_has_accessible_label(&form.enabled);
+    assert_has_accessible_label(&form.name);
+    assert_has_accessible_label(&form.value);
     let multipart = editor.body.multipart_rows.borrow()[0].clone();
     assert_has_accessible_label(&multipart.enabled);
     assert_has_accessible_label(&multipart.name);
     assert_has_accessible_label(&multipart.kind);
     assert_has_accessible_label(&multipart.value);
     drop(header);
+    drop(form);
     drop(multipart);
     assert!(editor.body.json_editor.is_auto_indent());
     assert!(editor.body.json_editor.is_indent_on_tab());
     assert!(editor.body.json_editor.is_insert_spaces_instead_of_tabs());
-    assert!(editor.body.json_editor.is_smart_backspace());
+    assert!(editor.body.json_editor.shows_line_numbers());
     assert!(!editor.body.json_editor.space_drawer().enables_matrix());
     assert_eq!(editor.body.json_editor.indent_width(), 2);
     assert_eq!(editor.body.json_editor.tab_width(), 2);
+    assert!(editor.body.text_editor.is_auto_indent());
+    assert!(editor.body.text_editor.is_indent_on_tab());
+    assert!(editor.body.text_editor.is_insert_spaces_instead_of_tabs());
+    assert!(editor.body.text_editor.shows_line_numbers());
+    assert!(!editor.body.text_editor.space_drawer().enables_matrix());
+    assert_eq!(editor.body.text_editor.indent_width(), 2);
+    assert_eq!(editor.body.text_editor.tab_width(), 2);
     let source_buffer = editor
         .body
         .json_editor
@@ -104,6 +120,20 @@ fn widget_lifetimes() {
             .map(|scheme| scheme.id()),
         Some(expected_scheme.into())
     );
+    let text_buffer = editor
+        .body
+        .text_editor
+        .buffer()
+        .downcast::<sourceview5::Buffer>()
+        .expect("Plain-text editor should use a GtkSourceView buffer");
+    assert!(text_buffer.language().is_none());
+    assert_eq!(
+        text_buffer
+            .style_scheme()
+            .as_ref()
+            .map(|scheme| scheme.id()),
+        Some(expected_scheme.into())
+    );
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&sidebar.root);
     root.append(&editor.headers_box);
@@ -111,6 +141,7 @@ fn widget_lifetimes() {
     window.set_child(Some(&root));
 
     let first_header = editor.header_rows.borrow()[0].row.downgrade();
+    let first_form = editor.body.form_rows.borrow()[0].row.downgrade();
     let first_field = editor.body.multipart_rows.borrow()[0].row.downgrade();
     apply_request(
         &Request::default(),
@@ -123,6 +154,10 @@ fn widget_lifetimes() {
     assert!(
         first_header.upgrade().is_none(),
         "replaced header row leaked"
+    );
+    assert!(
+        first_form.upgrade().is_none(),
+        "replaced URL-encoded form row leaked"
     );
     assert!(
         first_field.upgrade().is_none(),
@@ -139,6 +174,20 @@ fn widget_lifetimes() {
         .emit_clicked();
     drop(row);
     assert!(weak.upgrade().is_none(), "removed header row leaked");
+
+    add_form_urlencoded_row(&editor.body.form_box, &editor.body.form_rows, &autosave);
+    let row = editor.body.form_rows.borrow().last().unwrap().row.clone();
+    let weak = row.downgrade();
+    row.last_child()
+        .unwrap()
+        .downcast::<Button>()
+        .unwrap()
+        .emit_clicked();
+    drop(row);
+    assert!(
+        weak.upgrade().is_none(),
+        "removed URL-encoded form row leaked"
+    );
 
     add_multipart_row(
         &editor.body.multipart_box,

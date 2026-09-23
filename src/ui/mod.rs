@@ -35,7 +35,6 @@ use crate::runtime::EffectRunner;
 mod dialogs;
 mod editor;
 mod flow;
-mod json_editor;
 mod sidebar;
 mod toast;
 

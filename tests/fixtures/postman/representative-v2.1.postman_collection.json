@@ -139,17 +139,30 @@
       ]
     },
     {
-      "name": "Unsupported body becomes empty",
+      "name": "Submit URL encoded form",
       "request": {
-        "method": "GET",
+        "method": "POST",
         "body": {
           "mode": "urlencoded",
           "urlencoded": [
             {
-              "key": "ignored",
-              "value": "ignored"
+              "key": "name",
+              "value": "Pakpos"
             }
           ]
+        },
+        "url": "http://127.0.0.1:1/echo/form"
+      }
+    },
+    {
+      "name": "Unsupported body becomes empty",
+      "request": {
+        "method": "POST",
+        "body": {
+          "mode": "file",
+          "file": {
+            "src": "assets/upload.txt"
+          }
         },
         "url": "http://127.0.0.1:1/echo/empty"
       }

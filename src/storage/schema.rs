@@ -38,11 +38,22 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), StorageError
                     REFERENCES collection_nodes(id) ON DELETE CASCADE,
                 method TEXT NOT NULL,
                 url TEXT NOT NULL,
-                body_mode TEXT NOT NULL CHECK (body_mode IN ('none', 'json', 'multipart')),
+                body_mode TEXT NOT NULL CHECK (
+                    body_mode IN ('none', 'json', 'form_urlencoded', 'text', 'multipart')
+                ),
                 json_body TEXT
             ) STRICT;
 
             CREATE TABLE IF NOT EXISTS request_headers (
+                request_id TEXT NOT NULL REFERENCES requests(node_id) ON DELETE CASCADE,
+                position INTEGER NOT NULL CHECK (position >= 0),
+                enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                name TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (request_id, position)
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS form_urlencoded_fields (
                 request_id TEXT NOT NULL REFERENCES requests(node_id) ON DELETE CASCADE,
                 position INTEGER NOT NULL CHECK (position >= 0),
                 enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),

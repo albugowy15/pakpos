@@ -74,7 +74,7 @@ The codebase uses several Linux desktop, concurrency, and architecture-specific 
 | **GLib**                                | The low-level utility and event-loop library underneath GTK. Its _main loop_ waits for input, timers, and queued callbacks, then runs their handlers on the UI thread.                                                                                       | `EffectRunner` uses a GLib timer to check for completed worker operations and deliver their results safely to GTK.                                            |
 | **GIO**                                 | GLib's higher-level I/O and application API. It provides application actions, files, menus, and other desktop integration primitives.                                                                                                                        | Pakpos uses GIO types through GTK's re-exports for application actions and related UI integration. It does not use GIO as the HTTP client.                    |
 | **GDK**                                 | The GTK Drawing Kit: GTK's lower-level layer for displays, input events, cursors, keys, and the clipboard.                                                                                                                                                   | Editor key handling, pointer input, and clipboard behavior use GDK APIs re-exported by GTK.                                                                   |
-| **GtkSourceView**                       | A GTK text-editor component with source-code features such as syntax highlighting, undo/redo, line handling, and style schemes.                                                                                                                              | The `sourceview5` crate powers the JSON request editor. Pakpos adds its own pair completion and indentation policy around it.                                 |
+| **GtkSourceView**                       | A GTK text-editor component with source-code features such as syntax highlighting, undo/redo, line handling, and style schemes.                                                                                                                              | The `sourceview5` crate powers the JSON and plain-text request editors. The JSON view loads GtkSourceView's installed JSON language specification. |
 | **main/UI thread**                      | The operating-system thread that runs GTK's event loop. GTK widgets are not general-purpose thread-safe objects, so they must be read and changed on this thread.                                                                                            | Widget callbacks and rendering stay here. HTTP, SQLite, and filesystem work is moved to workers so the window does not freeze.                                |
 | **MPSC**                                | _Multiple producer, single consumer_. A channel in which many senders may feed one receiving endpoint. Rust's `std::sync::mpsc` module provides this channel family, although each Pakpos background operation currently uses a simple sender/receiver pair. | A worker sends its completed `Result` through an MPSC channel; a GLib timer on the main thread polls the receiver.                                            |
 | **oneshot channel**                     | A channel designed to deliver at most one value. It is useful for a single completion or cancellation signal.                                                                                                                                                | Each running HTTP request receives a Tokio oneshot cancellation signal. Dropping or sending through it tells the request future to stop.                      |
@@ -240,10 +240,12 @@ Request {
 }
 ```
 
-`HttpMethod` supports GET, POST, PUT, PATCH, DELETE, and HEAD. `HeaderRow` preserves row order, duplicate names, enabled state, and empty values. `RequestBody` has three modes:
+`HttpMethod` supports GET, POST, PUT, PATCH, DELETE, and HEAD. `HeaderRow` preserves row order, duplicate names, enabled state, and empty values. `RequestBody` has five modes:
 
 - `None`;
 - `Json(String)`, which preserves the user's source text;
+- `FormUrlEncoded(Vec<FormField>)`, which preserves ordered, duplicate, and disabled key/value rows;
+- `Text(String)`, which preserves plain-text source;
 - `Multipart(Vec<MultipartField>)`, where each field is text or a filesystem path.
 
 The model is deliberately permissive while editing. An incomplete URL, invalid JSON, or missing multipart file may exist in the editor and storage session. Validation is performed at the network boundary by `Request::validated`.
@@ -380,25 +382,11 @@ This module builds header and body editors and converts between GTK widgets and 
 
 - `collect_request` reads widgets into a `Request`;
 - `apply_request` renders a `Request` into widgets;
-- header/multipart row helpers create and remove dynamic rows;
+- header/URL-form/multipart row helpers create and remove dynamic rows;
 - `autosave_on_blur` and `AutosaveTrigger` connect editor lifecycle to collection persistence;
 - GtkSourceView configuration selects an adaptive Adwaita light/dark scheme.
 
 Programmatic rendering sets `applying_editor` in the caller so widget signals do not mistake rendering for a user edit.
-
-### `ui/json_editor.rs`: assisted JSON editing
-
-This module implements editor behavior that GtkSourceView does not provide by itself:
-
-- `{}` and `[]` completion outside strings;
-- generated-closer tracking with GTK text marks;
-- skipping a generated closer instead of inserting a duplicate;
-- removing untouched pairs with Backspace;
-- two-space indentation and empty-pair expansion on Enter;
-- aligning closing brackets with their opening line;
-- string/escape-aware structural scanning.
-
-The planning logic is separated into pure functions and is heavily unit tested. GTK integration is limited to reading the buffer, applying one grouped user action, and maintaining generated-closer marks. Loading a request disables undo temporarily so the previous request does not become part of the new request's undo history.
 
 ### `ui/sidebar.rs`: collection and request navigation
 
@@ -478,7 +466,7 @@ Postman import reads and converts the file before saving the new native collecti
 2. validate and normalize the request once;
 3. create a Reqwest client with redirects disabled and Rustls TLS;
 4. append enabled headers while preserving duplicates where HTTP permits;
-5. attach JSON directly or build a streamed multipart form;
+5. attach JSON or plain text directly, encode URL-form fields, or build a streamed multipart form;
 6. send the request;
 7. copy status and ordered response headers;
 8. stream response chunks into `ResponseBodyCollector`;
@@ -549,8 +537,9 @@ Every connection enables foreign keys. File-backed connections use a two-second 
 | ---------------------- | --------------------------------------------------- |
 | `collections`          | collection identity, name, timestamps               |
 | `collection_nodes`     | request identity, owning collection, name, position |
-| `requests`             | method, URL, body mode, JSON source                 |
+| `requests`             | method, URL, body mode, textual body source         |
 | `request_headers`      | ordered enabled/name/value rows                     |
+| `form_urlencoded_fields` | ordered enabled/name/value form rows              |
 | `multipart_fields`     | ordered enabled/name/type/value rows                |
 | `application_settings` | last-opened collection and future small settings    |
 
@@ -573,7 +562,7 @@ Normal navigation must use the lazy list/load pair. Do not call the export snaps
 
 `save_collection` is the atomic boundary. It validates collection ownership, opens one transaction, upserts the collection, applies deletions, upserts changed nodes, and writes only changed request details.
 
-For a changed request, dependent header and multipart rows are replaced inside that same transaction. Unrelated requests and collections are not rewritten. A failed transaction leaves the previously committed database intact.
+For a changed request, dependent header, URL-form, and multipart rows are replaced inside that same transaction. Unrelated requests and collections are not rewritten. A failed transaction leaves the previously committed database intact.
 
 `storage/error.rs` keeps database, filesystem, invalid-data, missing-directory, and not-found failures distinct while producing user-facing messages that do not include request contents.
 
@@ -583,7 +572,7 @@ For a changed request, dependent header and multipart rows are replaced inside t
 
 `to_command` creates a shell-safe command containing the explicit method, URL, enabled headers, and active body. Values are quoted as data.
 
-`from_command` removes supported line continuations and tokenizes with `shell_words::split`; it never starts a shell or executes the command. The parser supports the Pakpos method/header/JSON/multipart subset and rejects options whose effects cannot be represented safely. Harmless presentation flags may be ignored; redirect behavior produces a warning because Pakpos does not follow redirects.
+`from_command` removes supported line continuations and tokenizes with `shell_words::split`; it never starts a shell or executes the command. The parser supports the Pakpos method/header/textual-body/multipart subset and rejects options whose effects cannot be represented safely. Harmless presentation flags may be ignored; redirect behavior produces a warning because Pakpos does not follow redirects.
 
 Add cURL syntax here only when it maps cleanly to the existing `Request` model. A syntax feature that needs authentication engines, cookies, redirects, scripts, or another out-of-scope capability should normally remain rejected.
 
@@ -596,7 +585,7 @@ Import behavior:
 - require a v2.1 schema identifier and collection name;
 - recursively flatten folder items in source order;
 - accept string or structured URLs;
-- preserve supported headers, disabled flags, ordering, JSON, and form-data;
+- preserve supported headers, disabled flags, ordering, JSON, plain text, URL-encoded forms, and form-data;
 - resolve relative multipart file paths against the import file's directory;
 - skip unsupported methods;
 - convert unsupported body modes to `RequestBody::None`;
@@ -606,7 +595,7 @@ Export behavior:
 
 - write `info.name` and the canonical v2.1 schema URL;
 - place every request at the collection root;
-- export JSON as Postman raw JSON and multipart as form-data;
+- export JSON and plain text as Postman raw bodies, URL-encoded forms as `urlencoded`, and multipart as form-data;
 - rebase file paths relative to the destination directory when possible;
 - omit response data and file contents.
 
@@ -753,7 +742,7 @@ Versions below are the requirements declared in `Cargo.toml`; `Cargo.lock` recor
 | --------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Rust standard library | Rust 2024 edition                                                    | Files, paths, OS threads, channels, collections, `Rc`/`Arc`, time, and Unix permission/path APIs                                              |
 | `gtk4` as `gtk`       | `0.11.5`, feature `v4_10`                                            | Native window, widgets, signals, accessibility roles, clipboard, file dialogs, GIO actions, GDK input, and GLib main-loop integration         |
-| `sourceview5`         | `0.11.2`                                                             | JSON source buffer/view, syntax highlighting, bracket matching, indentation support, undo/redo, and style schemes                             |
+| `sourceview5`         | `0.11.2`                                                             | JSON/plain-text source views, JSON language highlighting, line numbers, undo/redo, and style schemes                                           |
 | `reqwest`             | `0.13.5`, default features disabled; `multipart`, `rustls`, `stream` | HTTP/HTTPS client, headers, URL parsing, streamed multipart files, streamed response chunks, and TLS through Rustls                           |
 | `tokio`               | `1.53.1`, features `macros`, `rt`, `sync`, `time`                    | Per-request async runtime, timeout/select logic, cancellation oneshot channel, and async tests/macros used by the library                     |
 | `rusqlite`            | `0.40.2`, default features disabled; `bundled`                       | Embedded SQLite connection, transactions, prepared statements, parameters, and row decoding; bundled SQLite avoids a system SQLite dependency |
@@ -796,7 +785,6 @@ Most modules contain `#[cfg(test)] mod tests` for pure or focused behavior:
 - cURL and Postman conversion;
 - response classification, decoding, naming, and partial cleanup;
 - local HTTP behavior in `net.rs`;
-- pure JSON editing plans in `ui/json_editor.rs`.
 
 ### Storage tests
 
@@ -842,7 +830,7 @@ Use this table before editing.
 | Change autosave or navigation policy              | `app/collections.rs`, `app/state.rs`    | `ui/flow.rs`, sidebar/editor triggers                                            |
 | Change collection list UI                         | `ui/sidebar.rs`                         | `ui/flow.rs` if data loading changes                                             |
 | Change request editor widgets                     | `ui/editor.rs`                          | domain model and capture/apply tests                                             |
-| Change JSON typing assistance                     | `ui/json_editor.rs`                     | pure planner tests and optional GTK lifetime tests                               |
+| Change JSON editor configuration                  | `ui/editor.rs`                          | optional GTK lifetime tests                                                      |
 | Add a dialog                                      | `ui/dialogs.rs`                         | action setup in `ui/mod.rs` or `ui/sidebar.rs`                                   |
 | Change notification presentation                  | `ui/toast.rs` or sidebar status helpers | caller-specific error flow                                                       |
 | Change HTTP transport behavior                    | `net.rs`                                | `models.rs`, response collector, local-server tests                              |

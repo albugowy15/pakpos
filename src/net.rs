@@ -123,6 +123,22 @@ async fn execute_inner(
             }
             outbound = outbound.body(body);
         }
+        RequestBody::FormUrlEncoded(fields) => {
+            if !has_content_type {
+                outbound = outbound.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
+            }
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for field in fields {
+                serializer.append_pair(&field.name, &field.value);
+            }
+            outbound = outbound.body(serializer.finish());
+        }
+        RequestBody::Text(body) => {
+            if !has_content_type {
+                outbound = outbound.header(CONTENT_TYPE, "text/plain");
+            }
+            outbound = outbound.body(body);
+        }
         RequestBody::Multipart(fields) => {
             let mut form = Form::new();
             for field in fields {
@@ -317,6 +333,72 @@ mod tests {
             2
         );
         assert_eq!(response.display_body(), "{\n  \"ok\": true\n}");
+    }
+
+    #[tokio::test]
+    async fn sends_form_and_plain_text_with_default_content_types() {
+        for (body, expected_content_type, expected_body) in [
+            (
+                RequestBody::FormUrlEncoded(vec![
+                    crate::models::FormField::enabled("name", "Pakpos"),
+                    crate::models::FormField::enabled("tag", "one two"),
+                    crate::models::FormField {
+                        enabled: false,
+                        name: "hidden".to_owned(),
+                        value: "ignored".to_owned(),
+                    },
+                ]),
+                "application/x-www-form-urlencoded",
+                "name=Pakpos&tag=one+two",
+            ),
+            (
+                RequestBody::Text("first line\nsecond line".to_owned()),
+                "text/plain",
+                "first line\nsecond line",
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let expected_body_bytes = expected_body.as_bytes().to_vec();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.ends_with(&expected_body_bytes) {
+                        break;
+                    }
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+                request
+            });
+
+            let request = Request {
+                method: HttpMethod::Post,
+                url: format!("http://{address}/submit"),
+                body,
+                ..Request::default()
+            };
+            let (_cancel_sender, cancel_receiver) = oneshot::channel();
+            let response = execute(request, cancel_receiver).await.unwrap();
+            let request = String::from_utf8(server.join().unwrap()).unwrap();
+
+            assert!(request.contains(&format!("content-type: {expected_content_type}\r\n")));
+            assert!(request.ends_with(expected_body));
+            assert_eq!(response.status, 204);
+        }
     }
 
     #[tokio::test]

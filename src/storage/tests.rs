@@ -125,6 +125,50 @@ fn saves_multipart_paths_and_order_losslessly() {
 }
 
 #[test]
+fn saves_textual_body_modes_losslessly() {
+    let mut store = CollectionStore::open_in_memory().unwrap();
+    let collection = collection("Text bodies");
+    let form = CollectionRequest::new(
+        collection.id,
+        "Submit form",
+        0,
+        Request {
+            body: RequestBody::FormUrlEncoded(vec![
+                FormField::enabled("name", "Pakpos"),
+                FormField::enabled("tag", "one"),
+                FormField {
+                    enabled: false,
+                    name: "tag".to_owned(),
+                    value: "two".to_owned(),
+                },
+            ]),
+            ..Request::default()
+        },
+    );
+    let text = CollectionRequest::new(
+        collection.id,
+        "Submit text",
+        1,
+        Request {
+            body: RequestBody::Text("first line\nsecond line".to_owned()),
+            ..Request::default()
+        },
+    );
+
+    store
+        .save_collection(
+            &collection,
+            &[form.node.clone(), text.node.clone()],
+            &[form.clone(), text.clone()],
+            &[],
+        )
+        .unwrap();
+
+    assert_eq!(store.load_request(form.node.id).unwrap(), form);
+    assert_eq!(store.load_request(text.node.id).unwrap(), text);
+}
+
+#[test]
 fn saves_non_utf8_linux_file_paths_losslessly() {
     use std::os::unix::ffi::OsStringExt;
 
