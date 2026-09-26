@@ -13,13 +13,13 @@ use std::{cell::RefCell, rc::Rc};
 
 use gtk::{
     Align, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry,
-    EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, TextView, gio, glib,
-    prelude::*,
+    EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, SearchEntry,
+    TextView, gio, glib, prelude::*,
 };
 use pakpos::models::{
     FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
 };
-use sourceview5::prelude::BufferExt;
+use sourceview5::prelude::{BufferExt, SearchSettingsExt};
 
 use super::set_accessible_label;
 
@@ -76,6 +76,24 @@ pub(super) struct EditorWidgetHandles {
     pub(super) headers_box: GtkBox,
     pub(super) header_rows: Rc<RefCell<Vec<HeaderWidgets>>>,
     pub(super) body: BodyWidgets,
+}
+
+#[derive(Clone)]
+pub(super) struct SourceViewerWidgets {
+    pub(super) root: GtkBox,
+    pub(super) view: sourceview5::View,
+    pub(super) search_revealer: gtk::Revealer,
+    pub(super) search_entry: SearchEntry,
+    pub(super) search_settings: sourceview5::SearchSettings,
+}
+
+impl SourceViewerWidgets {
+    pub(super) fn reset_search(&self) {
+        self.search_settings.set_search_text(None);
+        self.search_entry.set_text("");
+        self.search_entry.remove_css_class("error");
+        self.search_revealer.set_reveal_child(false);
+    }
 }
 
 pub(super) fn request_autosave(autosave: &AutosaveTrigger) {
@@ -620,6 +638,252 @@ pub(super) fn readonly_text_view() -> TextView {
         .build()
 }
 
+pub(super) fn build_source_viewer() -> SourceViewerWidgets {
+    let buffer = sourceview5::Buffer::builder()
+        .highlight_syntax(false)
+        .build();
+    configure_editor_style_scheme(&buffer);
+    let view = sourceview5::View::builder()
+        .buffer(&buffer)
+        .editable(false)
+        .cursor_visible(false)
+        .monospace(true)
+        .show_line_numbers(true)
+        .wrap_mode(gtk::WrapMode::None)
+        .top_margin(4)
+        .bottom_margin(4)
+        .left_margin(4)
+        .right_margin(4)
+        .build();
+
+    let search_settings = sourceview5::SearchSettings::builder()
+        .wrap_around(true)
+        .build();
+    let search_context = sourceview5::SearchContext::builder()
+        .buffer(&buffer)
+        .settings(&search_settings)
+        .highlight(true)
+        .build();
+    let search_entry = SearchEntry::builder()
+        .placeholder_text("Find in response")
+        .build();
+    set_accessible_label(&search_entry, "Find in response body");
+    let previous = Button::builder()
+        .icon_name("go-up-symbolic")
+        .tooltip_text("Previous match (Shift+Enter)")
+        .build();
+    set_accessible_label(&previous, "Previous match");
+    let next = Button::builder()
+        .icon_name("go-down-symbolic")
+        .tooltip_text("Next match (Enter)")
+        .build();
+    set_accessible_label(&next, "Next match");
+    let close = Button::builder()
+        .icon_name("window-close-symbolic")
+        .tooltip_text("Close search (Escape)")
+        .build();
+    close.add_css_class("flat");
+    set_accessible_label(&close, "Close search");
+    let search_controls = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(0)
+        .halign(Align::End)
+        .valign(Align::Start)
+        .build();
+    search_controls.add_css_class("osd");
+    search_controls.append(&search_entry);
+    search_controls.append(&previous);
+    search_controls.append(&next);
+    search_controls.append(&close);
+    let search_revealer = gtk::Revealer::builder()
+        .halign(Align::End)
+        .valign(Align::Start)
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .child(&search_controls)
+        .build();
+
+    search_entry.connect_search_changed({
+        let search_settings = search_settings.clone();
+        let search_context = search_context.clone();
+        let view = view.clone();
+        move |entry| {
+            let text = entry.text();
+            search_settings.set_search_text((!text.is_empty()).then_some(text.as_str()));
+            let found = text.is_empty() || select_first_search_match(&view, &search_context);
+            if found {
+                entry.remove_css_class("error");
+            } else {
+                entry.add_css_class("error");
+            }
+        }
+    });
+    search_entry.connect_activate({
+        let search_context = search_context.clone();
+        let view = view.clone();
+        move |_| select_search_match(&view, &search_context, true)
+    });
+    search_entry.connect_next_match({
+        let search_context = search_context.clone();
+        let view = view.clone();
+        move |_| select_search_match(&view, &search_context, true)
+    });
+    search_entry.connect_previous_match({
+        let search_context = search_context.clone();
+        let view = view.clone();
+        move |_| select_search_match(&view, &search_context, false)
+    });
+    previous.connect_clicked({
+        let search_context = search_context.clone();
+        let view = view.clone();
+        move |_| select_search_match(&view, &search_context, false)
+    });
+    next.connect_clicked({
+        let search_context = search_context.clone();
+        let view = view.clone();
+        move |_| select_search_match(&view, &search_context, true)
+    });
+    search_entry.connect_stop_search({
+        let search_revealer = search_revealer.clone();
+        let search_settings = search_settings.clone();
+        let view = view.clone();
+        move |entry| close_source_search(&search_revealer, entry, &search_settings, &view)
+    });
+    close.connect_clicked({
+        let search_revealer = search_revealer.clone();
+        let search_entry = search_entry.clone();
+        let search_settings = search_settings.clone();
+        let view = view.clone();
+        move |_| close_source_search(&search_revealer, &search_entry, &search_settings, &view)
+    });
+
+    let previous_shortcuts = gtk::ShortcutController::new();
+    previous_shortcuts.add_shortcut(gtk::Shortcut::new(
+        Some(
+            gtk::ShortcutTrigger::parse_string("<Shift>Return")
+                .expect("valid Shift+Enter shortcut"),
+        ),
+        Some(gtk::CallbackAction::new({
+            let search_context = search_context.clone();
+            let view = view.clone();
+            move |_, _| {
+                select_search_match(&view, &search_context, false);
+                glib::Propagation::Stop
+            }
+        })),
+    ));
+    search_entry.add_controller(previous_shortcuts);
+
+    let find_shortcuts = gtk::ShortcutController::new();
+    find_shortcuts.add_shortcut(gtk::Shortcut::new(
+        Some(gtk::ShortcutTrigger::parse_string("<Control>f").expect("valid Ctrl+F shortcut")),
+        Some(gtk::CallbackAction::new({
+            let search_revealer = search_revealer.clone();
+            let search_entry = search_entry.clone();
+            move |_, _| {
+                search_revealer.set_reveal_child(true);
+                search_entry.grab_focus();
+                glib::Propagation::Stop
+            }
+        })),
+    ));
+    view.add_controller(find_shortcuts);
+
+    let scroll = scrolled(&view);
+    scroll.set_vexpand(true);
+    let overlay = gtk::Overlay::new();
+    overlay.set_vexpand(true);
+    overlay.set_child(Some(&scroll));
+    overlay.add_overlay(&search_revealer);
+    let root = GtkBox::new(Orientation::Vertical, 0);
+    root.append(&overlay);
+    SourceViewerWidgets {
+        root,
+        view,
+        search_revealer,
+        search_entry,
+        search_settings,
+    }
+}
+
+fn close_source_search(
+    revealer: &gtk::Revealer,
+    entry: &SearchEntry,
+    settings: &sourceview5::SearchSettings,
+    view: &sourceview5::View,
+) {
+    settings.set_search_text(None);
+    entry.set_text("");
+    entry.remove_css_class("error");
+    revealer.set_reveal_child(false);
+    view.grab_focus();
+}
+
+fn select_first_search_match(
+    view: &sourceview5::View,
+    context: &sourceview5::SearchContext,
+) -> bool {
+    let buffer = view.buffer();
+    select_search_match_from(view, context, &buffer.start_iter(), true)
+}
+
+fn select_search_match(
+    view: &sourceview5::View,
+    context: &sourceview5::SearchContext,
+    forward: bool,
+) {
+    if context.settings().search_text().is_none() {
+        return;
+    }
+    let buffer = view.buffer();
+    let iter = match buffer.selection_bounds() {
+        Some((_, end)) if forward => end,
+        Some((start, _)) => start,
+        None => buffer.iter_at_mark(&buffer.get_insert()),
+    };
+    select_search_match_from(view, context, &iter, forward);
+}
+
+fn select_search_match_from(
+    view: &sourceview5::View,
+    context: &sourceview5::SearchContext,
+    iter: &gtk::TextIter,
+    forward: bool,
+) -> bool {
+    let found = if forward {
+        context.forward(iter)
+    } else {
+        context.backward(iter)
+    };
+    let Some((mut start, end, _)) = found else {
+        return false;
+    };
+    view.buffer().select_range(&start, &end);
+    view.scroll_to_iter(&mut start, 0.1, false, 0.0, 0.0);
+    true
+}
+
+pub(super) fn set_source_content_type(view: &sourceview5::View, content_type: Option<&str>) {
+    let buffer = view
+        .buffer()
+        .downcast::<sourceview5::Buffer>()
+        .expect("GtkSourceView should use a GtkSourceBuffer");
+    let language = source_language_for_content_type(content_type);
+    buffer.set_language(language.as_ref());
+    buffer.set_highlight_syntax(language.is_some());
+}
+
+fn source_language_for_content_type(content_type: Option<&str>) -> Option<sourceview5::Language> {
+    let mime_type = response_mime_type(content_type?)?;
+    let content_type = gio::content_type_from_mime_type(mime_type)?;
+    sourceview5::LanguageManager::default()
+        .guess_language(None::<&std::path::Path>, Some(content_type.as_str()))
+}
+
+fn response_mime_type(content_type: &str) -> Option<&str> {
+    let mime_type = content_type.split(';').next()?.trim();
+    (!mime_type.is_empty()).then_some(mime_type)
+}
+
 pub(super) fn scrolled<W: IsA<gtk::Widget>>(child: &W) -> ScrolledWindow {
     ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
@@ -843,5 +1107,20 @@ pub(super) fn reset_multipart_rows(body: &BodyWidgets, fields: &[MultipartField]
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_mime_type;
+
+    #[test]
+    fn response_mime_type_ignores_parameters_and_rejects_empty_values() {
+        assert_eq!(
+            response_mime_type(" application/json ; charset=utf-8"),
+            Some("application/json")
+        );
+        assert_eq!(response_mime_type(""), None);
+        assert_eq!(response_mime_type(" ; charset=utf-8"), None);
     }
 }
