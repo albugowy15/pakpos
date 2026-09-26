@@ -40,21 +40,21 @@ native persistence for flat collections of requests and Postman v2.1 import/expo
 The initial release still requires performance measurements and manual Postman and
 GTK verification.
 
-| Area | Progress |
-| --- | --- |
-| Native GTK request editor and HTTP execution | Available |
-| Headers, JSON/form/plain-text bodies, cancellation, and response inspection | Available |
-| Copy and paste cURL | Available for supported headers, textual bodies, and multipart fields |
-| Multipart form-data and streamed file uploads | Available |
-| Response classification, downloads, and charset handling | Available |
-| SQLite collections, request management, search, and autosave | Available; flat request lists with lazy detail loading |
-| Application, UI, and runtime separation | Implemented; HTTP and SQLite work run off the GTK main thread |
-| Allocation reductions and GTK ownership fixes | Implemented; audit and regression coverage added |
-| GtkSourceView JSON editor, highlighting, line numbers, pair completion, indentation, and undo/redo | Available |
-| Postman v2.1 import/export | Available for supported request fields; folders flatten on import |
-| Automated Postman interoperability verification | Fixture import, official-schema validation, semantic round trip, and local-server wire checks pass |
-| Release memory and storage performance measurements | Storage workload measured; full-application memory scenarios pending |
-| Manual accessibility and Postman desktop verification | GTK pass complete; Postman desktop verification pending |
+| Area                                                                               | Progress                                                                                           |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Native GTK request editor and HTTP execution                                       | Available                                                                                          |
+| Headers, JSON/XML/form/plain-text bodies, cancellation, and response inspection    | Available                                                                                          |
+| Copy and paste cURL                                                                | Available for supported headers, textual bodies, and multipart fields                              |
+| Multipart form-data and streamed file uploads                                      | Available                                                                                          |
+| Response classification, downloads, and charset handling                           | Available                                                                                          |
+| SQLite collections, request management, search, and autosave                       | Available; flat request lists with lazy detail loading                                             |
+| Application, UI, and runtime separation                                            | Implemented; HTTP and SQLite work run off the GTK main thread                                      |
+| Allocation reductions and GTK ownership fixes                                      | Implemented; audit and regression coverage added                                                   |
+| GtkSourceView JSON/XML editors, language highlighting, line numbers, and undo/redo | Available                                                                                          |
+| Postman v2.1 import/export                                                         | Available for supported request fields; folders flatten on import                                  |
+| Automated Postman interoperability verification                                    | Fixture import, official-schema validation, semantic round trip, and local-server wire checks pass |
+| Release memory and storage performance measurements                                | Storage workload measured; full-application memory scenarios pending                               |
+| Manual accessibility and Postman desktop verification                              | GTK pass complete; Postman desktop verification pending                                            |
 
 ## Installation
 

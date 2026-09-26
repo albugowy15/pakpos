@@ -69,6 +69,7 @@ fn widget_lifetimes() {
     assert_has_accessible_label(&header.value);
     assert_has_accessible_label(&editor.body.mode);
     assert_has_accessible_label(&editor.body.json_editor);
+    assert_has_accessible_label(&editor.body.xml_editor);
     assert_has_accessible_label(&editor.body.text_editor);
     assert!(response_body.view.shows_line_numbers());
     assert!(!response_body.view.is_editable());
@@ -144,6 +145,13 @@ fn widget_lifetimes() {
     assert!(!editor.body.json_editor.space_drawer().enables_matrix());
     assert_eq!(editor.body.json_editor.indent_width(), 2);
     assert_eq!(editor.body.json_editor.tab_width(), 2);
+    assert!(editor.body.xml_editor.is_auto_indent());
+    assert!(editor.body.xml_editor.is_indent_on_tab());
+    assert!(editor.body.xml_editor.is_insert_spaces_instead_of_tabs());
+    assert!(editor.body.xml_editor.shows_line_numbers());
+    assert!(!editor.body.xml_editor.space_drawer().enables_matrix());
+    assert_eq!(editor.body.xml_editor.indent_width(), 2);
+    assert_eq!(editor.body.xml_editor.tab_width(), 2);
     assert!(editor.body.text_editor.is_auto_indent());
     assert!(editor.body.text_editor.is_indent_on_tab());
     assert!(editor.body.text_editor.is_insert_spaces_instead_of_tabs());
@@ -163,6 +171,16 @@ fn widget_lifetimes() {
             .as_ref()
             .map(|language| language.id()),
         Some("json".into())
+    );
+    let xml_buffer = editor
+        .body
+        .xml_editor
+        .buffer()
+        .downcast::<sourceview5::Buffer>()
+        .expect("XML editor should use a GtkSourceView buffer");
+    assert_eq!(
+        xml_buffer.language().as_ref().map(|language| language.id()),
+        Some("xml".into())
     );
     let settings = gtk::Settings::default().expect("GTK settings should be available");
     let expected_scheme = json_style_scheme_id(
@@ -190,6 +208,10 @@ fn widget_lifetimes() {
             .map(|scheme| scheme.id()),
         Some(expected_scheme.into())
     );
+    assert_eq!(
+        xml_buffer.style_scheme().as_ref().map(|scheme| scheme.id()),
+        Some(expected_scheme.into())
+    );
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&sidebar.root);
     root.append(&editor.headers_box);
@@ -199,13 +221,28 @@ fn widget_lifetimes() {
     let first_header = editor.header_rows.borrow()[0].row.downgrade();
     let first_form = editor.body.form_rows.borrow()[0].row.downgrade();
     let first_field = editor.body.multipart_rows.borrow()[0].row.downgrade();
+    let xml_request = Request {
+        body: pakpos::models::RequestBody::Xml("<message>hello</message>".to_owned()),
+        ..Request::default()
+    };
     apply_request(
-        &Request::default(),
+        &xml_request,
         &editor.method,
         &editor.url,
         &editor.headers_box,
         &editor.header_rows,
         &editor.body,
+    );
+    assert_eq!(
+        collect_request(
+            &editor.method,
+            &editor.url,
+            &editor.header_rows,
+            &editor.body,
+        )
+        .unwrap()
+        .body,
+        xml_request.body
     );
     assert!(
         first_header.upgrade().is_none(),

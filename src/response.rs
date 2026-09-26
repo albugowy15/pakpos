@@ -411,9 +411,13 @@ fn classify(media_type: Option<&str>, content_disposition: Option<&str>) -> Body
         || media_type.eq_ignore_ascii_case("application/xhtml+xml")
     {
         BodyClassification::Text(ResponseTextKind::Html)
-    } else if media_type
-        .get(..5)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("text/"))
+    } else if media_type.eq_ignore_ascii_case("application/xml")
+        || media_type
+            .get(media_type.len().saturating_sub(4)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case("+xml"))
+        || media_type
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("text/"))
     {
         BodyClassification::Text(ResponseTextKind::Plain)
     } else {
@@ -1098,6 +1102,20 @@ mod tests {
             body: collector.finish(),
         };
         assert_eq!(response.display_body(), "{\n  \"ok\": true\n}");
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn classifies_xml_media_types_as_readable_text() {
+        let directory = test_directory();
+        for content_type in ["application/xml", "application/soap+xml", "text/xml"] {
+            let mut collector = collector(Some(content_type), None, &directory);
+            collector.push(b"<message>hello</message>");
+            let ResponseBody::Text { text, .. } = collector.finish() else {
+                panic!("expected {content_type} to remain readable");
+            };
+            assert_eq!(text, "<message>hello</message>");
+        }
         fs::remove_dir(directory).unwrap();
     }
 

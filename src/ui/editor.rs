@@ -27,9 +27,10 @@ pub(super) type AutosaveTrigger = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 const BODY_MODE_NONE: u32 = 0;
 const BODY_MODE_JSON: u32 = 1;
-const BODY_MODE_FORM_URL_ENCODED: u32 = 2;
-const BODY_MODE_MULTIPART: u32 = 3;
-const BODY_MODE_TEXT: u32 = 4;
+const BODY_MODE_XML: u32 = 2;
+const BODY_MODE_FORM_URL_ENCODED: u32 = 3;
+const BODY_MODE_MULTIPART: u32 = 4;
+const BODY_MODE_TEXT: u32 = 5;
 
 #[derive(Clone)]
 pub(super) struct HeaderWidgets {
@@ -60,6 +61,7 @@ pub(super) struct FormWidgets {
 pub(super) struct BodyWidgets {
     pub(super) mode: DropDown,
     pub(super) json_editor: sourceview5::View,
+    pub(super) xml_editor: sourceview5::View,
     pub(super) text_editor: sourceview5::View,
     pub(super) form_box: GtkBox,
     pub(super) form_rows: Rc<RefCell<Vec<FormWidgets>>>,
@@ -235,72 +237,19 @@ pub(super) fn build_body_page(
     let mode = DropDown::from_strings(&[
         "None",
         "JSON",
+        "XML",
         "Form Url Encoded",
         "Form Multipart",
         "Plain Text",
     ]);
     mode.set_halign(Align::Start);
     set_accessible_label(&mode, "Request body type");
-    let language = sourceview5::LanguageManager::default().language("json");
-    let editor_buffer = match language.as_ref() {
-        Some(language) => sourceview5::Buffer::builder()
-            .language(language)
-            .highlight_syntax(true)
-            .enable_undo(true)
-            .build(),
-        None => sourceview5::Buffer::builder().enable_undo(true).build(),
-    };
-    editor_buffer.set_max_undo_levels(100);
-    configure_editor_style_scheme(&editor_buffer);
-    let editor = sourceview5::View::builder()
-        .buffer(&editor_buffer)
-        .monospace(true)
-        .auto_indent(true)
-        .indent_on_tab(true)
-        .indent_width(2)
-        .tab_width(2)
-        .insert_spaces_instead_of_tabs(true)
-        .show_line_numbers(true)
-        .wrap_mode(gtk::WrapMode::None)
-        .top_margin(8)
-        .bottom_margin(8)
-        .left_margin(8)
-        .right_margin(8)
-        .build();
-    set_accessible_label(&editor, "JSON request body");
-    let editor_scroll = scrolled(&editor);
-    editor_scroll.set_vexpand(true);
-    autosave_on_blur(&editor, autosave);
-    editor_scroll.set_min_content_height(150);
-    editor_scroll.set_visible(false);
-
-    let text_buffer = sourceview5::Buffer::builder()
-        .highlight_matching_brackets(true)
-        .enable_undo(true)
-        .build();
-    text_buffer.set_max_undo_levels(100);
-    configure_editor_style_scheme(&text_buffer);
-    let text_editor = sourceview5::View::builder()
-        .buffer(&text_buffer)
-        .auto_indent(true)
-        .indent_on_tab(true)
-        .indent_width(2)
-        .tab_width(2)
-        .insert_spaces_instead_of_tabs(true)
-        .monospace(true)
-        .show_line_numbers(true)
-        .wrap_mode(gtk::WrapMode::None)
-        .top_margin(8)
-        .bottom_margin(8)
-        .left_margin(8)
-        .right_margin(8)
-        .build();
-    set_accessible_label(&text_editor, "Text request body");
-    autosave_on_blur(&text_editor, autosave);
-    let text_scroll = scrolled(&text_editor);
-    text_scroll.set_vexpand(true);
-    text_scroll.set_min_content_height(150);
-    text_scroll.set_visible(false);
+    let (editor, editor_scroll) =
+        build_request_source_editor(Some("json"), "JSON request body", autosave);
+    let (xml_editor, xml_scroll) =
+        build_request_source_editor(Some("xml"), "XML request body", autosave);
+    let (text_editor, text_scroll) =
+        build_request_source_editor(None, "Text request body", autosave);
 
     let form_panel = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -364,12 +313,14 @@ pub(super) fn build_body_page(
 
     mode.connect_selected_notify({
         let editor_scroll = editor_scroll.clone();
+        let xml_scroll = xml_scroll.clone();
         let text_scroll = text_scroll.clone();
         let form_scroll = form_scroll.clone();
         let multipart_scroll = multipart_scroll.clone();
         let autosave = autosave.clone();
         move |mode| {
             editor_scroll.set_visible(mode.selected() == BODY_MODE_JSON);
+            xml_scroll.set_visible(mode.selected() == BODY_MODE_XML);
             form_scroll.set_visible(mode.selected() == BODY_MODE_FORM_URL_ENCODED);
             text_scroll.set_visible(mode.selected() == BODY_MODE_TEXT);
             multipart_scroll.set_visible(mode.selected() == BODY_MODE_MULTIPART);
@@ -378,6 +329,7 @@ pub(super) fn build_body_page(
     });
     page.append(&mode);
     page.append(&editor_scroll);
+    page.append(&xml_scroll);
     page.append(&form_scroll);
     page.append(&text_scroll);
     page.append(&multipart_scroll);
@@ -386,6 +338,7 @@ pub(super) fn build_body_page(
         BodyWidgets {
             mode,
             json_editor: editor,
+            xml_editor,
             text_editor,
             form_box,
             form_rows,
@@ -394,6 +347,48 @@ pub(super) fn build_body_page(
             autosave: autosave.clone(),
         },
     )
+}
+
+fn build_request_source_editor(
+    language_id: Option<&str>,
+    accessible_label: &str,
+    autosave: &AutosaveTrigger,
+) -> (sourceview5::View, ScrolledWindow) {
+    let language = language_id.and_then(|id| sourceview5::LanguageManager::default().language(id));
+    let buffer_builder = sourceview5::Buffer::builder()
+        .highlight_matching_brackets(true)
+        .enable_undo(true);
+    let buffer = match language.as_ref() {
+        Some(language) => buffer_builder
+            .language(language)
+            .highlight_syntax(true)
+            .build(),
+        None => buffer_builder.highlight_syntax(false).build(),
+    };
+    buffer.set_max_undo_levels(100);
+    configure_editor_style_scheme(&buffer);
+    let editor = sourceview5::View::builder()
+        .buffer(&buffer)
+        .auto_indent(true)
+        .indent_on_tab(true)
+        .indent_width(2)
+        .tab_width(2)
+        .insert_spaces_instead_of_tabs(true)
+        .monospace(true)
+        .show_line_numbers(true)
+        .wrap_mode(gtk::WrapMode::None)
+        .top_margin(8)
+        .bottom_margin(8)
+        .left_margin(8)
+        .right_margin(8)
+        .build();
+    set_accessible_label(&editor, accessible_label);
+    autosave_on_blur(&editor, autosave);
+    let scroll = scrolled(&editor);
+    scroll.set_vexpand(true);
+    scroll.set_min_content_height(150);
+    scroll.set_visible(false);
+    (editor, scroll)
 }
 
 fn configure_editor_style_scheme(buffer: &sourceview5::Buffer) {
@@ -932,6 +927,7 @@ pub(super) fn collect_request(
     let body = match body_widgets.mode.selected() {
         BODY_MODE_NONE => RequestBody::None,
         BODY_MODE_JSON => RequestBody::Json(buffer_text(&body_widgets.json_editor)),
+        BODY_MODE_XML => RequestBody::Xml(buffer_text(&body_widgets.xml_editor)),
         BODY_MODE_FORM_URL_ENCODED => RequestBody::FormUrlEncoded(
             body_widgets
                 .form_rows
@@ -1007,6 +1003,7 @@ pub(super) fn apply_request(
         RequestBody::None => {
             body_widgets.mode.set_selected(BODY_MODE_NONE);
             set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.xml_editor, "");
             set_source_text(&body_widgets.text_editor, "");
             reset_form_urlencoded_rows(body_widgets, &[]);
             reset_multipart_rows(body_widgets, &[]);
@@ -1014,6 +1011,15 @@ pub(super) fn apply_request(
         RequestBody::Json(body) => {
             body_widgets.mode.set_selected(BODY_MODE_JSON);
             set_source_text(&body_widgets.json_editor, body);
+            set_source_text(&body_widgets.xml_editor, "");
+            set_source_text(&body_widgets.text_editor, "");
+            reset_form_urlencoded_rows(body_widgets, &[]);
+            reset_multipart_rows(body_widgets, &[]);
+        }
+        RequestBody::Xml(body) => {
+            body_widgets.mode.set_selected(BODY_MODE_XML);
+            set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.xml_editor, body);
             set_source_text(&body_widgets.text_editor, "");
             reset_form_urlencoded_rows(body_widgets, &[]);
             reset_multipart_rows(body_widgets, &[]);
@@ -1021,6 +1027,7 @@ pub(super) fn apply_request(
         RequestBody::FormUrlEncoded(fields) => {
             body_widgets.mode.set_selected(BODY_MODE_FORM_URL_ENCODED);
             set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.xml_editor, "");
             set_source_text(&body_widgets.text_editor, "");
             reset_form_urlencoded_rows(body_widgets, fields);
             reset_multipart_rows(body_widgets, &[]);
@@ -1028,6 +1035,7 @@ pub(super) fn apply_request(
         RequestBody::Text(body) => {
             body_widgets.mode.set_selected(BODY_MODE_TEXT);
             set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.xml_editor, "");
             set_source_text(&body_widgets.text_editor, body);
             reset_form_urlencoded_rows(body_widgets, &[]);
             reset_multipart_rows(body_widgets, &[]);
@@ -1035,6 +1043,7 @@ pub(super) fn apply_request(
         RequestBody::Multipart(fields) => {
             body_widgets.mode.set_selected(BODY_MODE_MULTIPART);
             set_source_text(&body_widgets.json_editor, "");
+            set_source_text(&body_widgets.xml_editor, "");
             set_source_text(&body_widgets.text_editor, "");
             reset_form_urlencoded_rows(body_widgets, &[]);
             reset_multipart_rows(body_widgets, fields);

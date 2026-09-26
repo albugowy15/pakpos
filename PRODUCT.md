@@ -19,8 +19,8 @@ reduces validation/export/response copies, consumes no-op autosave flags, and br
 GTK ownership cycles. Measurements and remaining costs are recorded in the
 [allocation audit](docs/memory-allocation-audit.md).
 
-The GtkSourceView JSON editor loads the installed JSON language specification for
-syntax highlighting and provides line numbers, an adaptive style scheme, native
+The GtkSourceView JSON and XML editors load their installed language specifications
+for syntax highlighting and provide line numbers, an adaptive style scheme, native
 indentation, and undo/redo. Pakpos does not add custom completion or key handling.
 
 Postman interoperability coverage uses a representative v2.1 fixture and a vendored
@@ -145,9 +145,9 @@ owner review; do not silently weaken limits or remove required features to meet 
 | --- | --- |
 | Requests | GET, POST, PUT, PATCH, DELETE, HEAD over HTTP and HTTPS |
 | Headers | Editable, ordered headers with enable/disable controls |
-| Request body | None, JSON, application/x-www-form-urlencoded, text/plain, and multipart/form-data with text and file fields |
+| Request body | None, JSON, XML, application/x-www-form-urlencoded, text/plain, and multipart/form-data with text and file fields |
 | Responses | Headers and readable body, with validation and transport errors shown as toasts |
-| Response formats | JSON, plain text, HTML source, and automatic file downloads |
+| Response formats | JSON, XML source, plain text, HTML source, and automatic file downloads |
 | Collections | Create, name, organize, autosave locally, and reopen saved requests |
 | Interoperability | Import and export Postman Collection v2.1 JSON; copy and paste cURL commands |
 
@@ -223,6 +223,11 @@ syntax highlighting. It shows line numbers and keeps GtkSourceView's native
 indentation, but adds no Pakpos-specific completion, pair deletion, or key handling.
 Pasting or loading JSON preserves the supplied text.
 
+**XML:** Provide the same multiline GtkSourceView editing experience using its
+installed XML language specification. Preserve and send the UTF-8 source unchanged
+with `Content-Type: application/xml` unless the user supplies an enabled
+Content-Type header. Do not require well-formed XML before sending.
+
 **Form URL Encoded:** Provide ordered rows with an enabled checkbox, key, value,
 and remove action. Allow repeated and empty keys or values, ignore blank placeholder
 rows, and encode enabled rows as `application/x-www-form-urlencoded` only when
@@ -260,7 +265,8 @@ Classify the body using Content-Type without case sensitivity and ignoring param
 
 | Response | Display/action |
 | --- | --- |
-| `application/json` or a subtype ending in `+json` | Pretty-print valid JSON; offer raw text view |
+| `application/json` or a subtype ending in `+json` | Pretty-print valid JSON |
+| `application/xml` or a subtype ending in `+xml` | Display XML source as highlighted text |
 | `text/plain` or other `text/*` except HTML | Display selectable plain text |
 | `text/html` or `application/xhtml+xml` | Display HTML source as text |
 | `Content-Disposition: attachment` with a nonempty body | Automatically save as a file, regardless of media type |
@@ -399,7 +405,7 @@ the [official v2.1 schema documentation](https://schema.postman.com/json/collect
 
 The supported mapping includes request names, the six methods,
 URLs represented as strings or structured objects, headers and disabled flags,
-raw JSON/plain-text bodies, URL-encoded forms, and form-data text/file entries.
+raw JSON/XML/plain-text bodies, URL-encoded forms, and form-data text/file entries.
 Export JSON and plain text as `raw`, URL-encoded bodies as `urlencoded`, and
 multipart as `formdata`. Preserve effective
 query strings, repeated fields, ordering, and disabled flags across round trips.

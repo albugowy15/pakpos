@@ -221,9 +221,13 @@ pub fn build(application: &Application) {
     request_panel.append(&request_notebook);
     main.connect_position_notify({
         let json_editor = body.json_editor.downgrade();
+        let xml_editor = body.xml_editor.downgrade();
         move |_| {
             if let Some(json_editor) = json_editor.upgrade() {
                 json_editor.queue_draw();
+            }
+            if let Some(xml_editor) = xml_editor.upgrade() {
+                xml_editor.queue_draw();
             }
         }
     });
@@ -232,6 +236,7 @@ pub fn build(application: &Application) {
         let request_panel = request_panel.clone();
         let response_panel = response_panel.clone();
         let json_editor = body.json_editor.downgrade();
+        let xml_editor = body.xml_editor.downgrade();
         move |toggle| {
             let side_by_side = toggle.is_active();
             let orientation = if side_by_side {
@@ -256,6 +261,9 @@ pub fn build(application: &Application) {
             }
             if let Some(json_editor) = json_editor.upgrade() {
                 json_editor.queue_draw();
+            }
+            if let Some(xml_editor) = xml_editor.upgrade() {
+                xml_editor.queue_draw();
             }
         }
     });
