@@ -123,6 +123,12 @@ async fn execute_inner(
             }
             outbound = outbound.body(body);
         }
+        RequestBody::Xml(body) => {
+            if !has_content_type {
+                outbound = outbound.header(CONTENT_TYPE, "application/xml");
+            }
+            outbound = outbound.body(body);
+        }
         RequestBody::FormUrlEncoded(fields) => {
             if !has_content_type {
                 outbound = outbound.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
@@ -336,7 +342,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sends_form_and_plain_text_with_default_content_types() {
+    async fn sends_textual_bodies_with_default_content_types() {
         for (body, expected_content_type, expected_body) in [
             (
                 RequestBody::FormUrlEncoded(vec![
@@ -355,6 +361,11 @@ mod tests {
                 RequestBody::Text("first line\nsecond line".to_owned()),
                 "text/plain",
                 "first line\nsecond line",
+            ),
+            (
+                RequestBody::Xml("<message>hello</message>".to_owned()),
+                "application/xml",
+                "<message>hello</message>",
             ),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();

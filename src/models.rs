@@ -117,6 +117,7 @@ pub enum RequestBody {
     #[default]
     None,
     Json(String),
+    Xml(String),
     FormUrlEncoded(Vec<FormField>),
     Text(String),
     Multipart(Vec<MultipartField>),
@@ -259,7 +260,7 @@ impl Request {
                     message: error.to_string(),
                 })?;
             }
-            RequestBody::FormUrlEncoded(_) | RequestBody::Text(_) => {}
+            RequestBody::Xml(_) | RequestBody::FormUrlEncoded(_) | RequestBody::Text(_) => {}
             RequestBody::Multipart(fields) => {
                 if self.headers.iter().any(|header| {
                     header.enabled
@@ -582,6 +583,14 @@ mod tests {
             value.body = RequestBody::Json(json.to_owned());
             value.validated().unwrap();
         }
+    }
+
+    #[test]
+    fn xml_body_is_preserved_for_sending() {
+        let mut value = request("https://example.com/xml");
+        value.body = RequestBody::Xml("<?xml version=\"1.0\"?><message>hello</message>".to_owned());
+
+        assert_eq!(value.clone().validated().unwrap().body, value.body);
     }
 
     #[test]

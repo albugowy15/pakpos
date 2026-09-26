@@ -289,6 +289,8 @@ fn import_body(
                 .and_then(Value::as_str);
             let language_is_json =
                 language.is_some_and(|language| language.eq_ignore_ascii_case("json"));
+            let language_is_xml =
+                language.is_some_and(|language| language.eq_ignore_ascii_case("xml"));
             let content_type = headers.iter().find_map(|header| {
                 (header.enabled && header.name.eq_ignore_ascii_case("content-type")).then(|| {
                     header
@@ -303,6 +305,9 @@ fn import_body(
             let content_type_is_json = content_type
                 .as_deref()
                 .is_some_and(|value| value == "application/json" || value.ends_with("+json"));
+            let content_type_is_xml = content_type.as_deref().is_some_and(|value| {
+                value == "application/xml" || value == "text/xml" || value.ends_with("+xml")
+            });
             if language_is_json
                 || content_type_is_json
                 || (language.is_none()
@@ -310,6 +315,8 @@ fn import_body(
                     && serde_json::from_str::<Value>(raw).is_ok())
             {
                 RequestBody::Json(raw.to_owned())
+            } else if language_is_xml || content_type_is_xml {
+                RequestBody::Xml(raw.to_owned())
             } else {
                 RequestBody::Text(raw.to_owned())
             }
@@ -419,6 +426,11 @@ fn export_request(request: &CollectionRequest, destination_directory: &Path) -> 
             "mode": "raw",
             "raw": source,
             "options": { "raw": { "language": "json" } },
+        })),
+        RequestBody::Xml(source) => Some(json!({
+            "mode": "raw",
+            "raw": source,
+            "options": { "raw": { "language": "xml" } },
         })),
         RequestBody::FormUrlEncoded(fields) => Some(json!({
             "mode": "urlencoded",
@@ -614,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn imports_and_exports_form_and_plain_text_bodies() {
+    fn imports_and_exports_form_plain_text_and_xml_bodies() {
         let source = format!(
             r#"{{
                 "info": {{"name": "Text bodies", "schema": "{COLLECTION_SCHEMA}"}},
@@ -630,6 +642,11 @@ mod tests {
                     {{"name": "Text", "request": {{
                         "method": "POST", "url": "https://example.com/text",
                         "body": {{"mode": "raw", "raw": "42", "options": {{"raw": {{"language": "text"}}}}}}
+                    }}}},
+                    {{"name": "XML", "request": {{
+                        "method": "POST", "url": "https://example.com/xml",
+                        "header": [{{"key": "Content-Type", "value": "application/soap+xml"}}],
+                        "body": {{"mode": "raw", "raw": "<message>hello</message>"}}
                     }}}}
                 ]
             }}"#
@@ -652,12 +669,17 @@ mod tests {
             imported.requests[1].request.body,
             RequestBody::Text("42".to_owned())
         );
+        assert_eq!(
+            imported.requests[2].request.body,
+            RequestBody::Xml("<message>hello</message>".to_owned())
+        );
 
         let exported =
             export_collection(&imported.summary, &imported.requests, Path::new("/tmp")).unwrap();
         let round_trip = import_collection(&exported, Path::new("/tmp")).unwrap();
         assert_eq!(round_trip.requests[0].request, imported.requests[0].request);
         assert_eq!(round_trip.requests[1].request, imported.requests[1].request);
+        assert_eq!(round_trip.requests[2].request, imported.requests[2].request);
     }
 
     #[test]

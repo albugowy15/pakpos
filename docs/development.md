@@ -19,7 +19,7 @@ cargo run
 ```
 
 The current implementation supports GET, POST, PUT, PATCH, DELETE, and HEAD;
-ordered enabled headers; None, JSON, URL-encoded form, plain-text, and multipart
+ordered enabled headers; None, JSON, XML, URL-encoded form, plain-text, and multipart
 bodies; URL, header, and JSON validation; 30-second request timeouts; cancellation;
 redirects disabled; and a response view with headers and a bounded 5 MiB body
 preview. Validation and transport failures use
@@ -32,8 +32,9 @@ and file values, repeated names, native file selection, validation, inferred med
 types, and streamed file reads.
 
 URL-encoded forms use ordered, enableable key/value rows and are encoded only at
-the send boundary. Plain-text bodies use a GtkSourceView editor with the same base
-presentation and undo support as JSON, without JSON-specific assistance.
+the send boundary. XML and plain-text bodies use GtkSourceView editors with the
+same base presentation and undo support as JSON; XML loads the installed XML
+language specification while plain text has no language-specific assistance.
 
 Response handling classifies JSON, text, HTML source, attachments, and binary data.
 Supported text charsets are decoded with visible replacement/unsupported-charset
@@ -42,9 +43,9 @@ streamed through collision-safe partial files into the OS-configured Downloads
 directory. Flat SQLite collections, Postman v2.1 import/export, and JSON source
 editing are implemented.
 
-The JSON editor loads GtkSourceView's installed JSON language specification for
-syntax highlighting. It also shows line numbers, uses the adaptive editor style
-scheme, and keeps native indentation. Pakpos installs no custom completion or key
+The JSON and XML editors load GtkSourceView's installed language specifications
+for syntax highlighting. They show line numbers, use the adaptive editor style
+scheme, and keep native indentation. Pakpos installs no custom completion or key
 handling.
 
 The collection milestone uses one application-managed embedded SQLite

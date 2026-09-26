@@ -154,18 +154,28 @@ fn saves_textual_body_modes_losslessly() {
             ..Request::default()
         },
     );
+    let xml = CollectionRequest::new(
+        collection.id,
+        "Submit XML",
+        2,
+        Request {
+            body: RequestBody::Xml("<message>hello</message>".to_owned()),
+            ..Request::default()
+        },
+    );
 
     store
         .save_collection(
             &collection,
-            &[form.node.clone(), text.node.clone()],
-            &[form.clone(), text.clone()],
+            &[form.node.clone(), text.node.clone(), xml.node.clone()],
+            &[form.clone(), text.clone(), xml.clone()],
             &[],
         )
         .unwrap();
 
     assert_eq!(store.load_request(form.node.id).unwrap(), form);
     assert_eq!(store.load_request(text.node.id).unwrap(), text);
+    assert_eq!(store.load_request(xml.node.id).unwrap(), xml);
 }
 
 #[test]

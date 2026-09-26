@@ -69,6 +69,7 @@ pub fn to_command(request: impl Borrow<Request>) -> Result<String, CurlError> {
     });
     let generated_content_type = match &request.body {
         RequestBody::Json(_) => Some("application/json"),
+        RequestBody::Xml(_) => Some("application/xml"),
         RequestBody::FormUrlEncoded(_) => Some("application/x-www-form-urlencoded"),
         RequestBody::Text(_) => Some("text/plain"),
         RequestBody::None | RequestBody::Multipart(_) => None,
@@ -80,7 +81,7 @@ pub fn to_command(request: impl Borrow<Request>) -> Result<String, CurlError> {
 
     match &request.body {
         RequestBody::None => {}
-        RequestBody::Json(body) | RequestBody::Text(body) => {
+        RequestBody::Json(body) | RequestBody::Xml(body) | RequestBody::Text(body) => {
             command.push_str(" --data-raw ");
             shell_quote_into(&mut command, body);
         }
@@ -293,6 +294,8 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
                 ))
             })?;
             RequestBody::Json(text)
+        } else if content_type.as_deref().is_some_and(is_xml_media_type) {
+            RequestBody::Xml(text)
         } else if content_type.as_deref() == Some("text/plain") {
             RequestBody::Text(text)
         } else if content_type.as_deref() == Some("application/x-www-form-urlencoded")
@@ -326,6 +329,10 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
         .map_err(|error| CurlError::new(error.to_string()))?;
 
     Ok(CurlImport { request, warnings })
+}
+
+fn is_xml_media_type(value: &str) -> bool {
+    value == "application/xml" || value == "text/xml" || value.ends_with("+xml")
 }
 
 fn next_value<'a>(
@@ -654,6 +661,15 @@ mod tests {
             text.request.body,
             RequestBody::Text("first line".to_owned())
         );
+
+        let xml = from_command(
+            "curl -H 'Content-Type: application/soap+xml' -d '<message>hello</message>' https://example.com",
+        )
+        .unwrap();
+        assert_eq!(
+            xml.request.body,
+            RequestBody::Xml("<message>hello</message>".to_owned())
+        );
     }
 
     #[test]
@@ -664,6 +680,10 @@ mod tests {
                 "application/x-www-form-urlencoded",
             ),
             (RequestBody::Text("hello".to_owned()), "text/plain"),
+            (
+                RequestBody::Xml("<message>hello</message>".to_owned()),
+                "application/xml",
+            ),
         ] {
             let command = to_command(Request {
                 method: HttpMethod::Post,

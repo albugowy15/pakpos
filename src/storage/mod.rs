@@ -323,6 +323,7 @@ impl CollectionStore {
         let body = match body_mode.as_str() {
             "none" => RequestBody::None,
             "json" => RequestBody::Json(json.unwrap_or_default()),
+            "xml" => RequestBody::Xml(json.unwrap_or_default()),
             "form_urlencoded" => {
                 RequestBody::FormUrlEncoded(self.load_form_urlencoded_fields(request_id)?)
             }
@@ -616,6 +617,7 @@ fn save_request(
     let (body_mode, json_body) = match &request.request.body {
         RequestBody::None => ("none", None),
         RequestBody::Json(body) => ("json", Some(body.as_str())),
+        RequestBody::Xml(body) => ("xml", Some(body.as_str())),
         RequestBody::FormUrlEncoded(_) => ("form_urlencoded", None),
         RequestBody::Text(body) => ("text", Some(body.as_str())),
         RequestBody::Multipart(_) => ("multipart", None),

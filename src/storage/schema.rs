@@ -39,7 +39,7 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), StorageError
                 method TEXT NOT NULL,
                 url TEXT NOT NULL,
                 body_mode TEXT NOT NULL CHECK (
-                    body_mode IN ('none', 'json', 'form_urlencoded', 'text', 'multipart')
+                    body_mode IN ('none', 'json', 'xml', 'form_urlencoded', 'text', 'multipart')
                 ),
                 json_body TEXT
             ) STRICT;
