@@ -20,8 +20,8 @@ use std::{
 
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry, FileDialog, HeaderBar,
-    Label, ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, ScrolledWindow, TextView,
-    ToggleButton, gio, glib, prelude::*,
+    Label, ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, TextView, ToggleButton,
+    gio, glib, prelude::*,
 };
 use pakpos::{
     app::{Action, AppEvent, AppState, DeferredAction, EffectOutput},
@@ -42,8 +42,9 @@ mod toast;
 mod tests;
 
 use self::editor::{
-    AutosaveTrigger, apply_request, autosave_on_blur, build_body_page, build_headers_page,
-    collect_request, readonly_text_view, request_autosave, scrolled,
+    AutosaveTrigger, SourceViewerWidgets, apply_request, autosave_on_blur, build_body_page,
+    build_headers_page, build_source_viewer, collect_request, readonly_text_view, request_autosave,
+    scrolled, set_source_content_type,
 };
 use self::flow::{autosave_current_collection, capture_active_request, collection_is_dirty};
 use self::sidebar::{build_sidebar, setup_collection_actions};
@@ -261,14 +262,10 @@ pub fn build(application: &Application) {
 
     let response_notebook = Notebook::new();
     response_notebook.set_vexpand(true);
-    let response_body = readonly_text_view();
-    set_accessible_label(&response_body, "Response body");
-    response_notebook.append_page(&scrolled(&response_body), Some(&Label::new(Some("Body"))));
-    let response_raw = readonly_text_view();
-    set_accessible_label(&response_raw, "Raw response body");
-    let response_raw_page = scrolled(&response_raw);
-    response_raw_page.set_visible(false);
-    response_notebook.append_page(&response_raw_page, Some(&Label::new(Some("Raw"))));
+    let response_body = build_source_viewer();
+    set_accessible_label(&response_body.view, "Response body");
+    set_accessible_shortcut(&response_body.view, "Control+F");
+    response_notebook.append_page(&response_body.root, Some(&Label::new(Some("Body"))));
     let response_headers = readonly_text_view();
     set_accessible_label(&response_headers, "Response headers");
     response_notebook.append_page(
@@ -308,8 +305,6 @@ pub fn build(application: &Application) {
         let cancel = cancel.downgrade();
         let toast = toast.clone();
         let response_body = response_body.clone();
-        let response_raw = response_raw.clone();
-        let response_raw_page = response_raw_page.clone();
         let response_headers = response_headers.clone();
         let state = state.clone();
 
@@ -334,9 +329,9 @@ pub fn build(application: &Application) {
                 return;
             };
             set_request_running(&send_group, &cancel, true);
-            response_body.buffer().set_text("");
-            response_raw.buffer().set_text("");
-            response_raw_page.set_visible(false);
+            response_body.view.buffer().set_text("");
+            response_body.reset_search();
+            set_source_content_type(&response_body.view, None);
             response_headers.buffer().set_text("");
 
             let state = state.clone();
@@ -344,8 +339,6 @@ pub fn build(application: &Application) {
             let cancel = cancel.clone();
             let toast = toast.clone();
             let response_body = response_body.clone();
-            let response_raw = response_raw.clone();
-            let response_raw_page = response_raw_page.clone();
             let response_headers = response_headers.clone();
             let effects = state.effects.clone();
             effects.run(effect, move |output| {
@@ -354,14 +347,7 @@ pub fn build(application: &Application) {
                 };
                 if state.update(Action::RequestCompleted { id }).accepted {
                     set_request_running(&send_group, &cancel, false);
-                    display_result(
-                        result,
-                        &toast,
-                        &response_body,
-                        &response_raw,
-                        &response_raw_page,
-                        &response_headers,
-                    );
+                    display_result(result, &toast, &response_body, &response_headers);
                 }
             });
         }
@@ -637,28 +623,22 @@ fn show_message(summary: &Label, message: &str) {
 fn display_result(
     result: Result<ResponseData, String>,
     toast: &Toast,
-    body: &TextView,
-    raw: &TextView,
-    raw_page: &ScrolledWindow,
+    body: &SourceViewerWidgets,
     headers: &TextView,
 ) {
     match result {
         Ok(response) => {
-            body.buffer().set_text(&response.display_body());
-            if let Some(raw_body) = response.display_raw_body() {
-                raw.buffer().set_text(&raw_body);
-                raw_page.set_visible(true);
-            } else {
-                raw.buffer().set_text("");
-                raw_page.set_visible(false);
-            }
+            let content_type = response.content_type();
+            body.reset_search();
+            set_source_content_type(&body.view, content_type);
+            body.view.buffer().set_text(&response.display_body());
             headers.buffer().set_text(&response.display_headers());
         }
         Err(error) => {
             toast.error(&error);
-            body.buffer().set_text("");
-            raw.buffer().set_text("");
-            raw_page.set_visible(false);
+            body.view.buffer().set_text("");
+            body.reset_search();
+            set_source_content_type(&body.view, None);
             headers.buffer().set_text("");
         }
     }

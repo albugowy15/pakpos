@@ -125,34 +125,6 @@ impl ResponseData {
         }
     }
 
-    pub fn display_raw_body(&self) -> Option<Cow<'_, str>> {
-        let ResponseBody::Text {
-            text,
-            kind: ResponseTextKind::Json,
-            truncated,
-            saved_path,
-            notices,
-        } = &self.body
-        else {
-            return None;
-        };
-
-        let mut displayed = Cow::Borrowed(text.as_str());
-        if *truncated {
-            append_notice(displayed.to_mut(), "Preview stopped at 5 MiB");
-        }
-        if let Some(path) = saved_path {
-            append_notice(
-                displayed.to_mut(),
-                &format!("Full response saved to {}", path.display()),
-            );
-        }
-        for notice in notices {
-            append_notice(displayed.to_mut(), notice);
-        }
-        Some(displayed)
-    }
-
     pub fn display_headers(&self) -> String {
         let mut text = String::new();
         for header in &self.headers {
@@ -164,6 +136,13 @@ impl ResponseData {
             text.push_str(&header.value);
         }
         text
+    }
+
+    pub fn content_type(&self) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case("content-type"))
+            .map(|header| header.value.as_str())
     }
 }
 
@@ -1062,6 +1041,26 @@ mod tests {
     }
 
     #[test]
+    fn finds_the_content_type_header_case_insensitively() {
+        let response = ResponseData {
+            status: 200,
+            reason: "OK".into(),
+            elapsed: Default::default(),
+            body_size: 0,
+            headers: vec![ResponseHeader {
+                name: "Content-Type".into(),
+                value: "application/json; charset=utf-8".into(),
+            }],
+            body: ResponseBody::Empty,
+        };
+
+        assert_eq!(
+            response.content_type(),
+            Some("application/json; charset=utf-8")
+        );
+    }
+
+    #[test]
     fn utf8_probe_handles_every_split_of_multibyte_characters() {
         let bytes = "a¢€🌍z".as_bytes();
         for split in 0..=bytes.len() {
@@ -1099,10 +1098,6 @@ mod tests {
             body: collector.finish(),
         };
         assert_eq!(response.display_body(), "{\n  \"ok\": true\n}");
-        assert_eq!(
-            response.display_raw_body().as_deref(),
-            Some("{\"ok\":true}")
-        );
         fs::remove_dir(directory).unwrap();
     }
 

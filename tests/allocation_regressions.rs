@@ -77,7 +77,7 @@ fn measure<T>(f: impl FnOnce() -> T) -> (T, Allocations) {
 }
 
 #[test]
-fn large_payloads_do_not_get_copied_by_bookkeeping_or_raw_display() {
+fn large_payloads_do_not_get_copied_by_bookkeeping_or_display() {
     const BODY_BYTES: usize = 2 * 1024 * 1024;
     let request = || Request {
         url: "https://example.com".into(),

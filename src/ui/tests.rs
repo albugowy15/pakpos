@@ -8,7 +8,7 @@
 use super::*;
 use editor::{
     EditorWidgetHandles, add_form_urlencoded_row, add_header_row, add_multipart_row,
-    json_style_scheme_id,
+    build_source_viewer, json_style_scheme_id, set_source_content_type,
 };
 use pakpos::{app::CollectionSession, models::Request};
 use sidebar::{build_request_context_menu, render_request_buttons};
@@ -48,6 +48,7 @@ fn widget_lifetimes() {
     let sidebar = build_sidebar(autosave.clone());
     let (_, headers_box, header_rows) = build_headers_page(&autosave);
     let (body_page, body) = build_body_page(&window, &autosave);
+    let response_body = build_source_viewer();
     let editor = Rc::new(EditorWidgetHandles {
         method: DropDown::from_strings(&["GET", "POST"]),
         url: Entry::new(),
@@ -69,6 +70,61 @@ fn widget_lifetimes() {
     assert_has_accessible_label(&editor.body.mode);
     assert_has_accessible_label(&editor.body.json_editor);
     assert_has_accessible_label(&editor.body.text_editor);
+    assert!(response_body.view.shows_line_numbers());
+    assert!(!response_body.view.is_editable());
+    assert_eq!(response_body.view.wrap_mode(), gtk::WrapMode::None);
+    assert!(!response_body.search_revealer.reveals_child());
+    assert!(response_body.search_settings.wraps_around());
+    let response_buffer = response_body
+        .view
+        .buffer()
+        .downcast::<sourceview5::Buffer>()
+        .expect("response viewer should use a GtkSourceView buffer");
+    assert!(!response_buffer.is_highlight_syntax());
+    set_source_content_type(&response_body.view, Some("application/json; charset=utf-8"));
+    if sourceview5::LanguageManager::default()
+        .language("json")
+        .is_some()
+    {
+        assert_eq!(
+            response_buffer.language().map(|language| language.id()),
+            Some("json".into())
+        );
+        assert!(response_buffer.is_highlight_syntax());
+    }
+    set_source_content_type(
+        &response_body.view,
+        Some("application/x-pakpos-unsupported"),
+    );
+    assert!(response_buffer.language().is_none());
+    assert!(!response_buffer.is_highlight_syntax());
+    response_buffer.set_text("alpha beta alpha");
+    response_body.search_revealer.set_reveal_child(true);
+    response_body.search_entry.set_text("alpha");
+    response_body
+        .search_entry
+        .emit_by_name::<()>("search-changed", &[]);
+    assert_eq!(
+        response_body.search_settings.search_text().as_deref(),
+        Some("alpha")
+    );
+    let (start, end) = response_buffer
+        .selection_bounds()
+        .expect("the first search match should be selected");
+    assert_eq!((start.offset(), end.offset()), (0, 5));
+    response_body.search_entry.emit_activate();
+    let (start, end) = response_buffer
+        .selection_bounds()
+        .expect("the next search match should be selected");
+    assert_eq!((start.offset(), end.offset()), (11, 16));
+    response_body.search_entry.emit_previous_match();
+    let (start, end) = response_buffer
+        .selection_bounds()
+        .expect("the previous search match should be selected");
+    assert_eq!((start.offset(), end.offset()), (0, 5));
+    response_body.search_entry.emit_stop_search();
+    assert!(!response_body.search_revealer.reveals_child());
+    assert!(response_body.search_settings.search_text().is_none());
     let form = editor.body.form_rows.borrow()[0].clone();
     assert_has_accessible_label(&form.enabled);
     assert_has_accessible_label(&form.name);
