@@ -35,10 +35,7 @@ not retry requests.
 
 ## Status
 
-Updated 2026-09-20. Pakpos supports scratch requests, assisted JSON editing, and
-native persistence for flat collections of requests and Postman v2.1 import/export.
-The initial release still requires performance measurements and manual Postman and
-GTK verification.
+Updated 2026-09-20. Pakpos supports scratch requests, assisted JSON editing, and native persistence for flat collections of requests and Postman v2.1 import/export. The initial release still requires performance measurements and manual Postman and GTK verification.
 
 | Area                                                                               | Progress                                                                                           |
 | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -118,20 +115,12 @@ cargo test
 cargo build --release
 ```
 
-Formatting and strict Clippy checks pass. Coverage
-includes application state, JSON editing, request validation, cURL conversion,
-response handling, local HTTP integration, transactional SQLite storage, Postman
-schema validation, and supported-field round trips. One GTK widget-lifetime test is
-excluded from the default headless suite; see
-[development checks](docs/development.md#verification) for running it with a display.
+Formatting and strict Clippy checks pass. Coverage includes application state, JSON editing, request validation, cURL conversion, response handling, local HTTP integration, transactional SQLite storage, Postman schema validation, and supported-field round trips. One GTK widget-lifetime test is excluded from the default headless suite; see [development checks](docs/development.md#verification) for running it with a display.
 
 ## Collection storage
 
 Pakpos keeps native collections in one embedded SQLite database under the Linux user-data directory. Collection and request records use stable IDs, and request details are loaded on demand so listing collections does not load every request body. Saving an edit updates only the affected records in a transaction rather than rewriting unrelated collections.
 
-Postman Collection v2.1 JSON will remain an explicit import/export format instead
-of Pakpos's native working format. Multipart uploads continue to reference external
-files. SQLite stores only the latest empty or in-memory text response per request;
-binary downloads and file-backed response previews remain external.
+Postman Collection v2.1 JSON will remain an explicit import/export format instead of Pakpos's native working format. Multipart uploads continue to reference external files. SQLite stores only the latest empty or in-memory text response per request; binary downloads and file-backed response previews remain external.
 
 Maintainers can follow the [release guide](RELEASE.md) to prepare a version and publish it through the tag-triggered release workflow.
