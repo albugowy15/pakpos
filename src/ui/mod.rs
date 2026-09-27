@@ -119,6 +119,22 @@ pub fn build(application: &Application) {
         .default_width(1000)
         .default_height(700)
         .build();
+    let styles = gtk::CssProvider::new();
+    styles.load_from_data(
+        "
+        * { font-size: 12px; }
+        .request-delete-action,
+        .request-delete-action:hover,
+        .request-delete-action:focus,
+        .request-delete-action:active,
+        .request-delete-action * { color: #e01b24; }
+        ",
+    );
+    gtk::style_context_add_provider_for_display(
+        &gtk::prelude::WidgetExt::display(&window),
+        &styles,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 
     let header_bar = HeaderBar::builder().build();
     window.set_titlebar(Some(&header_bar));
@@ -163,25 +179,25 @@ pub fn build(application: &Application) {
         .position(320)
         .shrink_start_child(false)
         .shrink_end_child(false)
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(8)
-        .margin_end(8)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
         .build();
     let request_panel = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(12)
-        .margin_bottom(6)
+        .spacing(4)
+        .margin_bottom(4)
         .build();
     let response_panel = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(12)
-        .margin_top(6)
+        .spacing(4)
+        .margin_top(4)
         .build();
 
     let request_row = GtkBox::builder()
         .orientation(Orientation::Horizontal)
-        .spacing(6)
+        .spacing(4)
         .build();
     let method_labels = HttpMethod::ALL.map(HttpMethod::as_str);
     let method = DropDown::from_strings(&method_labels);
@@ -259,10 +275,10 @@ pub fn build(application: &Application) {
             };
             main.set_orientation(orientation);
 
-            request_panel.set_margin_bottom(if side_by_side { 0 } else { 6 });
-            request_panel.set_margin_end(if side_by_side { 6 } else { 0 });
-            response_panel.set_margin_top(if side_by_side { 0 } else { 6 });
-            response_panel.set_margin_start(if side_by_side { 6 } else { 0 });
+            request_panel.set_margin_bottom(if side_by_side { 0 } else { 4 });
+            request_panel.set_margin_end(if side_by_side { 4 } else { 0 });
+            response_panel.set_margin_top(if side_by_side { 0 } else { 4 });
+            response_panel.set_margin_start(if side_by_side { 4 } else { 0 });
 
             let available = if side_by_side {
                 main.width()

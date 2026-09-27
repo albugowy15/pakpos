@@ -30,18 +30,18 @@ use super::{RequestState, SidebarWidgets, set_accessible_label, show_error, show
 pub(super) fn build_sidebar(autosave: AutosaveTrigger) -> SidebarWidgets {
     let sidebar = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(8)
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(8)
-        .margin_end(8)
+        .spacing(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
         .build();
     let collection_picker = DropDown::from_strings(&[]);
     collection_picker.set_width_request(240);
     collection_picker.set_tooltip_text(Some("Active collection"));
     set_accessible_label(&collection_picker, "Active collection");
     collection_picker.update_property(&[gtk::accessible::Property::KeyShortcuts("Control+O")]);
-    let request_heading_row = GtkBox::new(Orientation::Horizontal, 12);
+    let request_heading_row = GtkBox::new(Orientation::Horizontal, 4);
     let requests = ListBox::builder()
         .selection_mode(SelectionMode::Single)
         .build();
@@ -454,14 +454,15 @@ pub(super) fn build_request_context_menu(
         .margin_start(4)
         .margin_end(4)
         .build();
-    let duplicate = context_menu_button("edit-copy-symbolic", "Duplicate");
-    let delete = context_menu_button("user-trash-symbolic", "Delete");
     let rename = context_menu_button("edit-rename-symbolic", "Rename");
-    let copy_curl = context_menu_button("edit-copy-symbolic", "Copy as Curl");
-    menu.append(&duplicate);
-    menu.append(&delete);
+    let duplicate = context_menu_button("edit-copy-symbolic", "Duplicate");
+    let copy_curl = context_menu_button("edit-copy-symbolic", "Copy as cURL");
+    let delete = context_menu_button("user-trash-symbolic", "Delete");
+    delete.add_css_class("request-delete-action");
     menu.append(&rename);
+    menu.append(&duplicate);
     menu.append(&copy_curl);
+    menu.append(&delete);
     popover.set_child(Some(&menu));
 
     duplicate.connect_clicked({
@@ -601,7 +602,7 @@ pub(super) fn context_menu_button(icon_name: &str, label: &str) -> Button {
     button.set_hexpand(true);
     let row = GtkBox::builder()
         .orientation(Orientation::Horizontal)
-        .spacing(8)
+        .spacing(4)
         .hexpand(true)
         .build();
     row.append(&Image::from_icon_name(icon_name));
@@ -662,7 +663,7 @@ pub(super) fn render_request_buttons(
             .build();
         let content = GtkBox::builder()
             .orientation(Orientation::Horizontal)
-            .spacing(12)
+            .spacing(4)
             .margin_top(4)
             .margin_bottom(4)
             .margin_start(4)

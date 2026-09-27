@@ -30,16 +30,16 @@ impl Toast {
             .wrap(true)
             .selectable(true)
             .max_width_chars(72)
-            .margin_top(8)
-            .margin_bottom(8)
-            .margin_start(8)
-            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(4)
+            .margin_start(4)
+            .margin_end(4)
             .build();
         let close = Button::builder()
             .icon_name("window-close-symbolic")
             .tooltip_text("Dismiss notification")
             .valign(Align::Center)
-            .margin_end(6)
+            .margin_end(4)
             .build();
         set_accessible_label(&close, "Dismiss notification");
         close.add_css_class("flat");
@@ -55,7 +55,7 @@ impl Toast {
         let revealer = Revealer::builder()
             .halign(Align::Center)
             .valign(Align::End)
-            .margin_bottom(8)
+            .margin_bottom(4)
             .transition_type(RevealerTransitionType::SlideUp)
             .transition_duration(150)
             .child(&content)

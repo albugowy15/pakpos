@@ -157,11 +157,11 @@ pub(super) fn build_headers_page(
 ) -> (GtkBox, GtkBox, Rc<RefCell<Vec<HeaderWidgets>>>) {
     let page = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(6)
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(8)
-        .margin_end(8)
+        .spacing(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
         .build();
     let rows_box = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -192,7 +192,7 @@ pub(super) fn add_header_row(
 ) {
     let row = GtkBox::builder()
         .orientation(Orientation::Horizontal)
-        .spacing(6)
+        .spacing(4)
         .build();
     let enabled = CheckButton::builder()
         .active(true)
@@ -261,11 +261,11 @@ pub(super) fn build_body_page(
 ) -> (GtkBox, BodyWidgets) {
     let page = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(6)
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(8)
-        .margin_end(8)
+        .spacing(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
         .build();
     let mode = DropDown::from_strings(&[
         "None",
@@ -286,7 +286,7 @@ pub(super) fn build_body_page(
 
     let form_panel = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(6)
+        .spacing(4)
         .build();
     let form_box = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -314,7 +314,7 @@ pub(super) fn build_body_page(
 
     let multipart_panel = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(6)
+        .spacing(4)
         .build();
     let multipart_box = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -410,10 +410,10 @@ fn build_request_source_editor(
         .monospace(true)
         .show_line_numbers(true)
         .wrap_mode(gtk::WrapMode::None)
-        .top_margin(8)
-        .bottom_margin(8)
-        .left_margin(8)
-        .right_margin(8)
+        .top_margin(4)
+        .bottom_margin(4)
+        .left_margin(4)
+        .right_margin(4)
         .build();
     set_accessible_label(&editor, accessible_label);
     autosave_on_blur(&editor, autosave);
@@ -474,7 +474,7 @@ pub(super) fn add_form_urlencoded_row(
 ) {
     let row = GtkBox::builder()
         .orientation(Orientation::Horizontal)
-        .spacing(6)
+        .spacing(4)
         .build();
     let enabled = CheckButton::builder()
         .active(true)
@@ -545,7 +545,7 @@ pub(super) fn add_multipart_row(
 ) {
     let row = GtkBox::builder()
         .orientation(Orientation::Horizontal)
-        .spacing(6)
+        .spacing(4)
         .build();
     let enabled = CheckButton::builder()
         .active(true)
@@ -659,10 +659,10 @@ pub(super) fn readonly_text_view() -> TextView {
         .cursor_visible(false)
         .monospace(true)
         .wrap_mode(gtk::WrapMode::WordChar)
-        .top_margin(8)
-        .bottom_margin(8)
-        .left_margin(8)
-        .right_margin(8)
+        .top_margin(4)
+        .bottom_margin(4)
+        .left_margin(4)
+        .right_margin(4)
         .build()
 }
 
