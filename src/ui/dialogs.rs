@@ -57,11 +57,11 @@ pub(super) fn show_create_collection_dialog(
     close_on_escape(&dialog);
     let content = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(12)
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(8)
-        .margin_end(8)
+        .spacing(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
         .build();
     let prompt = Label::builder()
         .label("Collection name")
@@ -72,7 +72,7 @@ pub(super) fn show_create_collection_dialog(
         .activates_default(true)
         .build();
     set_accessible_label(&name, "Collection name");
-    let actions = GtkBox::new(Orientation::Horizontal, 6);
+    let actions = GtkBox::new(Orientation::Horizontal, 4);
     actions.set_halign(Align::End);
     let cancel = Button::with_label("Cancel");
     let create = Button::with_label("Create Collection");
@@ -186,18 +186,18 @@ pub(super) fn show_rename_request_dialog(
     close_on_escape(&dialog);
     let content = GtkBox::builder()
         .orientation(Orientation::Vertical)
-        .spacing(12)
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(8)
-        .margin_end(8)
+        .spacing(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
         .build();
     let name = Entry::builder()
         .text(current_name)
         .activates_default(true)
         .build();
     set_accessible_label(&name, "Request name");
-    let actions = GtkBox::new(Orientation::Horizontal, 6);
+    let actions = GtkBox::new(Orientation::Horizontal, 4);
     actions.set_halign(Align::End);
     let cancel = Button::with_label("Cancel");
     let done = Button::with_label("Done");
