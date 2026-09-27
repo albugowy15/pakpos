@@ -1,5 +1,8 @@
 # Pakpos
 
+![Pakpos Demo 1](https://res.cloudinary.com/bughowi-assets/image/upload/v1790502451/pakpos-demo-1.png)
+![Pakpos Demo 2](https://res.cloudinary.com/bughowi-assets/image/upload/v1790502451/pakpos-demo-2.png)
+
 Pakpos is a small native Linux application for testing HTTP APIs. It provides the convenience of a graphical cURL-style workflow without accounts, cloud storage, or a browser runtime.
 
 The project is written in Rust with GTK4. Keeping everyday API testing practical on Linux with a modest memory footprint is a core goal.
