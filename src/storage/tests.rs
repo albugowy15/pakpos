@@ -54,6 +54,116 @@ fn saves_lists_and_loads_a_request() {
     assert_eq!(store.load_request(request.node.id).unwrap(), request);
 }
 
+#[test]
+fn stores_only_the_latest_text_response_and_cascades_on_request_delete() {
+    let mut store = CollectionStore::open_in_memory().unwrap();
+    let collection = collection("Responses");
+    let request = CollectionRequest::new(
+        collection.id,
+        "Status",
+        0,
+        request("https://example.com/status"),
+    );
+    store
+        .save_collection(
+            &collection,
+            std::slice::from_ref(&request.node),
+            std::slice::from_ref(&request),
+            &[],
+        )
+        .unwrap();
+    let response = ResponseData {
+        status: 200,
+        reason: "OK".into(),
+        elapsed: Duration::from_millis(125),
+        body_size: 11,
+        headers: vec![
+            ResponseHeader {
+                name: "content-type".into(),
+                value: "text/plain".into(),
+            },
+            ResponseHeader {
+                name: "x-repeat".into(),
+                value: "one".into(),
+            },
+            ResponseHeader {
+                name: "x-repeat".into(),
+                value: "two".into(),
+            },
+        ],
+        body: ResponseBody::Text {
+            text: "hello world".into(),
+            kind: ResponseTextKind::Plain,
+            truncated: false,
+            saved_path: None,
+            notices: vec!["decoded as UTF-8".into()],
+        },
+    };
+
+    assert!(
+        store
+            .replace_response(request.node.id, Some(&response))
+            .unwrap()
+    );
+    let loaded = store.load_response(request.node.id).unwrap().unwrap();
+    assert_eq!(loaded.status, 200);
+    assert_eq!(loaded.reason, "OK");
+    assert_eq!(loaded.elapsed, Duration::from_millis(125));
+    assert_eq!(loaded.body_size, 11);
+    assert_eq!(loaded.headers.len(), 3);
+    let ResponseBody::Text { text, notices, .. } = loaded.body else {
+        panic!("stored text response expected");
+    };
+    assert_eq!(text, "hello world");
+    assert_eq!(notices, ["decoded as UTF-8"]);
+
+    let replacement = ResponseData {
+        status: 201,
+        reason: "Created".into(),
+        headers: vec![ResponseHeader {
+            name: "x-latest".into(),
+            value: "true".into(),
+        }],
+        body: ResponseBody::Empty,
+        ..response
+    };
+    store
+        .replace_response(request.node.id, Some(&replacement))
+        .unwrap();
+    let loaded = store.load_response(request.node.id).unwrap().unwrap();
+    assert_eq!(loaded.status, 201);
+    assert_eq!(loaded.headers.len(), 1);
+    assert_eq!(loaded.headers[0].name, "x-latest");
+    assert!(matches!(loaded.body, ResponseBody::Empty));
+
+    let downloaded = ResponseData {
+        body: ResponseBody::Downloaded {
+            path: PathBuf::from("/tmp/response.bin"),
+        },
+        ..replacement
+    };
+    assert!(
+        !store
+            .replace_response(request.node.id, Some(&downloaded))
+            .unwrap()
+    );
+    assert!(store.load_response(request.node.id).unwrap().is_none());
+
+    store
+        .replace_response(
+            request.node.id,
+            Some(&ResponseData {
+                body: ResponseBody::Empty,
+                ..downloaded
+            }),
+        )
+        .unwrap();
+    store
+        .save_collection(&collection, &[], &[], &[request.node.id])
+        .unwrap();
+    assert!(store.load_response(request.node.id).unwrap().is_none());
+}
+
 #[cfg(feature = "storage-profiling")]
 #[test]
 fn profiles_sql_statements_for_one_operation() {
@@ -362,6 +472,14 @@ fn persists_across_reopen() {
         0,
         request("https://example.com/status"),
     );
+    let response = ResponseData {
+        status: 204,
+        reason: "No Content".into(),
+        elapsed: Duration::from_millis(8),
+        body_size: 0,
+        headers: Vec::new(),
+        body: ResponseBody::Empty,
+    };
     {
         let mut store = CollectionStore::open(&path).unwrap();
         store
@@ -372,11 +490,18 @@ fn persists_across_reopen() {
                 &[],
             )
             .unwrap();
+        store
+            .replace_response(request.node.id, Some(&response))
+            .unwrap();
     }
     {
         let store = CollectionStore::open(&path).unwrap();
         assert_eq!(store.list_collections().unwrap(), vec![collection]);
         assert_eq!(store.load_request(request.node.id).unwrap(), request);
+        let loaded_response = store.load_response(request.node.id).unwrap().unwrap();
+        assert_eq!(loaded_response.status, 204);
+        assert_eq!(loaded_response.reason, "No Content");
+        assert!(matches!(loaded_response.body, ResponseBody::Empty));
     }
     fs::remove_file(path).unwrap();
 }

@@ -78,6 +78,7 @@ pub(super) fn build_sidebar(autosave: AutosaveTrigger) -> SidebarWidgets {
         applied_search: Rc::new(RefCell::new(String::new())),
         requests,
         request_rows: Rc::new(RefCell::new(std::collections::HashMap::new())),
+        active_request_popover: Rc::new(RefCell::new(None)),
         status,
         autosave,
     })
@@ -439,8 +440,13 @@ pub(super) fn build_request_context_menu(
     sidebar: &SidebarWidgets,
     editor: &EditorWidgets,
 ) -> Popover {
+    dispose_active_request_popover(sidebar);
     let popover = Popover::builder().has_arrow(true).build();
     popover.set_parent(request_row);
+    sidebar
+        .active_request_popover
+        .borrow_mut()
+        .replace(popover.clone());
     let menu = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .margin_top(4)
@@ -555,13 +561,37 @@ pub(super) fn build_request_context_menu(
         }
     });
 
-    popover.connect_closed(|popover| {
-        let popover = popover.clone();
-        // GTK requires the popover to stay parented during the `closed` signal;
-        // detach it on the next main-loop turn so the transient graph can drop.
-        glib::idle_add_local_once(move || popover.unparent());
+    popover.connect_closed({
+        let sidebar = Rc::downgrade(sidebar);
+        move |popover| {
+            let popover = popover.clone();
+            let sidebar = sidebar.clone();
+            // GTK requires the popover to stay parented during the `closed` signal;
+            // detach it on the next main-loop turn so the transient graph can drop.
+            glib::idle_add_local_once(move || {
+                if let Some(sidebar) = sidebar.upgrade() {
+                    let mut active = sidebar.active_request_popover.borrow_mut();
+                    if active.as_ref().is_some_and(|active| active == &popover) {
+                        active.take();
+                    }
+                }
+                if popover.parent().is_some() {
+                    popover.unparent();
+                }
+            });
+        }
     });
     popover
+}
+
+fn dispose_active_request_popover(sidebar: &SidebarWidgets) {
+    let Some(popover) = sidebar.active_request_popover.borrow_mut().take() else {
+        return;
+    };
+    popover.set_visible(false);
+    if popover.parent().is_some() {
+        popover.unparent();
+    }
 }
 
 pub(super) fn context_menu_button(icon_name: &str, label: &str) -> Button {
@@ -591,6 +621,7 @@ pub(super) fn render_request_buttons(
     editor: &EditorWidgets,
 ) {
     state.syncing_request_list.set(true);
+    dispose_active_request_popover(sidebar);
     sidebar.request_rows.borrow_mut().clear();
     while let Some(child) = sidebar.requests.first_child() {
         let row = child

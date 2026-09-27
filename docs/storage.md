@@ -44,6 +44,9 @@ may be refined during implementation without changing the product behavior.
 | Header | Request ID, position, enabled state, name, value |
 | URL-encoded form field | Request ID, position, enabled state, key, value |
 | Multipart field | Request ID, position, enabled state, field name, text/file kind, text value or resolved file path |
+| Latest response | Request ID, status and reason, elapsed time, body size, text kind, optional in-memory text body, truncation state |
+| Response header | Request ID, position, name, value |
+| Response notice | Request ID, position, decoded-body notice |
 
 Use persisted UUIDs or identifiers with equivalent collision resistance. Names are
 display values and are never keys. Enforce collection ownership, request-detail integrity,
@@ -64,7 +67,9 @@ Native persistence is not an in-memory mirror of the complete database:
 3. Selecting a request loads that request, its headers, body, URL-form fields, and multipart fields.
 4. Switching requests captures current editor changes before releasing the previous
    request's detailed state.
-5. Responses and downloads never enter the collection store.
+5. Store at most the latest empty or in-memory textual response for each request.
+   Load it on demand when its request becomes active. Downloads, binary bodies, and
+   file-backed text previews remain external and never enter SQLite.
 
 Keep the currently open request list and active editor state in memory. Do not cache every
 request body merely because its name appears in the sidebar. Prepared statements
@@ -134,10 +139,11 @@ skipped, while unsupported body modes become empty bodies.
 
 ## Security
 
-The database stores request URLs, headers, bodies, and multipart values as plaintext.
-These values may contain bearer tokens, cookies, API keys, or personal data. Pakpos
-must disclose this in persistence/export help, use restrictive filesystem permissions,
-never log stored values, and never upload or synchronize the database.
+The database stores request URLs, headers, bodies, multipart values, and eligible
+text responses as plaintext. These values may contain bearer tokens, cookies, API
+keys, personal data, or sensitive server output. Pakpos must disclose this in
+persistence/export help, use restrictive filesystem permissions, never log stored
+values, and never upload or synchronize the database.
 SQLite encryption and an application-managed secret vault are outside the initial
 release.
 

@@ -38,6 +38,7 @@ use crate::{
     models::{
         FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
     },
+    response::{ResponseBody, ResponseData, ResponseHeader, ResponseTextKind},
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -353,6 +354,202 @@ impl CollectionStore {
             }
             .into(),
         })
+    }
+
+    pub fn load_response(&self, request_id: Uuid) -> Result<Option<ResponseData>, StorageError> {
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT status, reason, elapsed_micros, body_size,
+                        body_kind, body_text, truncated
+                 FROM responses WHERE request_id = ?1",
+                [SqlId::new(request_id)],
+                |row| {
+                    Ok((
+                        row.get::<_, u16>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, bool>(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(StorageError::Database)?;
+        let Some((status, reason, elapsed_micros, body_size, body_kind, body_text, truncated)) =
+            stored
+        else {
+            return Ok(None);
+        };
+
+        let headers = self.load_response_headers(request_id)?;
+        let body = match body_kind.as_str() {
+            "empty" => ResponseBody::Empty,
+            "json" | "plain" | "html" => ResponseBody::Text {
+                text: body_text.ok_or_else(|| StorageError::InvalidData {
+                    message: format!("response for request {request_id} has no text body"),
+                })?,
+                kind: match body_kind.as_str() {
+                    "json" => ResponseTextKind::Json,
+                    "plain" => ResponseTextKind::Plain,
+                    "html" => ResponseTextKind::Html,
+                    _ => unreachable!(),
+                },
+                truncated,
+                saved_path: None,
+                notices: self.load_response_notices(request_id)?,
+            },
+            value => {
+                return Err(StorageError::InvalidData {
+                    message: format!(
+                        "response for request {request_id} has unknown body kind {value:?}"
+                    ),
+                });
+            }
+        };
+        Ok(Some(ResponseData {
+            status,
+            reason,
+            elapsed: Duration::from_micros(elapsed_micros as u64),
+            body_size: body_size as u64,
+            headers,
+            body,
+        }))
+    }
+
+    pub fn replace_response(
+        &mut self,
+        request_id: Uuid,
+        response: Option<&ResponseData>,
+    ) -> Result<bool, StorageError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::Database)?;
+        transaction
+            .execute(
+                "DELETE FROM responses WHERE request_id = ?1",
+                [SqlId::new(request_id)],
+            )
+            .map_err(StorageError::Database)?;
+        let Some(response) = response.filter(|response| response.is_persistable()) else {
+            transaction.commit().map_err(StorageError::Database)?;
+            return Ok(false);
+        };
+        let elapsed_micros =
+            i64::try_from(response.elapsed.as_micros()).map_err(|_| StorageError::InvalidData {
+                message: format!("response for request {request_id} has an excessive duration"),
+            })?;
+        let body_size =
+            i64::try_from(response.body_size).map_err(|_| StorageError::InvalidData {
+                message: format!("response for request {request_id} has an excessive body size"),
+            })?;
+        let (body_kind, body_text, truncated, notices) = match &response.body {
+            ResponseBody::Empty => ("empty", None, false, &[][..]),
+            ResponseBody::Text {
+                text,
+                kind,
+                truncated,
+                saved_path: None,
+                notices,
+            } => (
+                match kind {
+                    ResponseTextKind::Json => "json",
+                    ResponseTextKind::Plain => "plain",
+                    ResponseTextKind::Html => "html",
+                },
+                Some(text.as_str()),
+                *truncated,
+                notices.as_slice(),
+            ),
+            _ => unreachable!("non-persistable responses were filtered above"),
+        };
+        let changed = transaction
+            .execute(
+                "INSERT INTO responses (
+                    request_id, status, reason, elapsed_micros, body_size,
+                    body_kind, body_text, truncated
+                 )
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+                 FROM requests WHERE node_id = ?1",
+                params![
+                    SqlId::new(request_id),
+                    response.status,
+                    response.reason,
+                    elapsed_micros,
+                    body_size,
+                    body_kind,
+                    body_text,
+                    truncated,
+                ],
+            )
+            .map_err(StorageError::Database)?;
+        if changed == 0 {
+            transaction.commit().map_err(StorageError::Database)?;
+            return Ok(false);
+        }
+        for (position, header) in response.headers.iter().enumerate() {
+            transaction
+                .execute(
+                    "INSERT INTO response_headers (request_id, position, name, value)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        SqlId::new(request_id),
+                        position as i64,
+                        header.name,
+                        header.value,
+                    ],
+                )
+                .map_err(StorageError::Database)?;
+        }
+        for (position, notice) in notices.iter().enumerate() {
+            transaction
+                .execute(
+                    "INSERT INTO response_notices (request_id, position, notice)
+                     VALUES (?1, ?2, ?3)",
+                    params![SqlId::new(request_id), position as i64, notice],
+                )
+                .map_err(StorageError::Database)?;
+        }
+        transaction.commit().map_err(StorageError::Database)?;
+        Ok(true)
+    }
+
+    fn load_response_headers(&self, request_id: Uuid) -> Result<Vec<ResponseHeader>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT name, value FROM response_headers
+                 WHERE request_id = ?1 ORDER BY position",
+            )
+            .map_err(StorageError::Database)?;
+        statement
+            .query_map([SqlId::new(request_id)], |row| {
+                Ok(ResponseHeader {
+                    name: row.get(0)?,
+                    value: row.get(1)?,
+                })
+            })
+            .map_err(StorageError::Database)?
+            .map(|row| row.map_err(StorageError::Database))
+            .collect()
+    }
+
+    fn load_response_notices(&self, request_id: Uuid) -> Result<Vec<String>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT notice FROM response_notices
+                 WHERE request_id = ?1 ORDER BY position",
+            )
+            .map_err(StorageError::Database)?;
+        statement
+            .query_map([SqlId::new(request_id)], |row| row.get(0))
+            .map_err(StorageError::Database)?
+            .map(|row| row.map_err(StorageError::Database))
+            .collect()
     }
 
     /// Loads a consistent, complete snapshot for explicit interchange export.

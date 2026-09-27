@@ -112,6 +112,7 @@ fn import_postman(
                         session.select_request(request_id);
                     }
                     state.update(Action::SetCollection(session));
+                    editor.response.clear();
                     sidebar.search.set_text("");
                     sidebar.applied_search.replace(String::new());
                     render_request_buttons(&state, &sidebar, &editor);
@@ -350,6 +351,7 @@ pub(super) fn add_collection_request(
         return false;
     };
     apply_loaded_request(request_id, state, sidebar, editor);
+    editor.response.clear();
     queue_request_button_render(state, sidebar, editor);
     request_autosave(&sidebar.autosave);
     true
@@ -426,6 +428,7 @@ pub(super) fn append_duplicate_request(
         return;
     };
     apply_loaded_request(request_id, state, sidebar, editor);
+    editor.response.clear();
     render_request_buttons(state, sidebar, editor);
     request_autosave(&sidebar.autosave);
 }
@@ -510,7 +513,12 @@ pub(super) fn remove_request(
     render_request_buttons(state, sidebar, editor);
     if removal.removed_active {
         clear_request_editor(sidebar, editor);
-        if let Some(request_id) = removal.next_request {
+        let first_request = state
+            .collection
+            .borrow()
+            .as_ref()
+            .and_then(CollectionSession::active_request);
+        if let Some(request_id) = first_request {
             select_request(request_id, state, sidebar, editor, &sidebar.status);
         }
     }
@@ -527,18 +535,27 @@ pub(super) fn select_request(
     if state.collection_busy.get() {
         return;
     }
-    capture_active_request(state, sidebar, editor);
+    let already_active = state
+        .collection
+        .borrow()
+        .as_ref()
+        .is_some_and(|session| session.active_request() == Some(request_id));
+    if !already_active {
+        capture_active_request(state, sidebar, editor);
+    }
     let AppEvent::RequestSelected { loaded, .. } = state
         .update(Action::SelectCollectionRequest(request_id))
         .event
     else {
         return;
     };
+    editor.response.clear();
     // GTK owns the list-row selection. A full render is only needed when the list
     // itself changes.
     sync_active_request_row(state, sidebar, Some(request_id));
     if loaded {
         apply_loaded_request(request_id, state, sidebar, editor);
+        load_response_for_request(request_id, state, editor, response_summary);
         return;
     }
 
@@ -569,12 +586,12 @@ pub(super) fn select_request(
                     }
                     apply_loaded_request(request_id, &state, &sidebar, &editor);
                     sync_request_method(&state, &sidebar, request_id);
+                    load_response_for_request(request_id, &state, &editor, &response_summary);
                     show_message(&response_summary, "Loaded the saved request.");
                 }
                 Err(error) => {
-                    state.update(Action::ClearActiveRequest(request_id));
                     clear_request_editor(&sidebar, &editor);
-                    sync_active_request_row(&state, &sidebar, None);
+                    sync_active_request_row(&state, &sidebar, Some(request_id));
                     show_error(&response_summary, &error);
                 }
             }
@@ -663,6 +680,56 @@ pub(super) fn clear_request_editor(_sidebar: &SidebarWidgets, editor: &EditorWid
         &editor.header_rows,
         &editor.body,
     );
+    editor.response.clear();
+}
+
+fn load_response_for_request(
+    request_id: Uuid,
+    state: &Rc<RequestState>,
+    editor: &EditorWidgets,
+    response_summary: &Label,
+) {
+    if state.request_is_running_for(request_id) {
+        editor.response.clear();
+        return;
+    }
+    let update = state.update(Action::LoadResponse(request_id));
+    let Some(effect) = update.effect else {
+        editor.response.clear();
+        return;
+    };
+    state.effects.run(effect, {
+        let state = state.clone();
+        let editor = editor.clone();
+        let response_summary = response_summary.clone();
+        move |output| {
+            let EffectOutput::ResponseLoaded {
+                request_id: loaded_id,
+                result,
+            } = output
+            else {
+                return;
+            };
+            state.update(Action::CollectionOperationCompleted);
+            let is_active = loaded_id == request_id
+                && state
+                    .collection
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|session| session.active_request() == Some(request_id));
+            if !is_active {
+                return;
+            }
+            match result {
+                Ok(Some(response)) => editor.response.display(&response),
+                Ok(None) => editor.response.clear(),
+                Err(error) => {
+                    editor.response.clear();
+                    show_error(&response_summary, &error);
+                }
+            }
+        }
+    });
 }
 
 pub(super) fn collection_is_dirty(state: &Rc<RequestState>) -> bool {

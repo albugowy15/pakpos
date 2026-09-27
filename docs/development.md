@@ -22,7 +22,8 @@ The current implementation supports GET, POST, PUT, PATCH, DELETE, and HEAD;
 ordered enabled headers; None, JSON, XML, URL-encoded form, plain-text, and multipart
 bodies; URL, header, and JSON validation; 30-second request timeouts; cancellation;
 redirects disabled; and a response view with headers and a bounded 5 MiB body
-preview. Validation and transport failures use
+preview. Completed responses show their HTTP status, adaptively formatted elapsed
+time, and adaptively formatted body size. Validation and transport failures use
 transient overlay toasts instead of a permanent response status label. The
 menu attached to Send can copy the current request as cURL or populate the editor
 from a pasted cURL command. The current parser supports the six Pakpos methods,
@@ -40,8 +41,10 @@ Response handling classifies JSON, text, HTML source, attachments, and binary da
 Supported text charsets are decoded with visible replacement/unsupported-charset
 notices. Attachments, binary bodies, and text exceeding the 5 MiB preview limit are
 streamed through collision-safe partial files into the OS-configured Downloads
-directory. Flat SQLite collections, Postman v2.1 import/export, and JSON source
-editing are implemented.
+directory. SQLite stores the latest empty or in-memory text response for each request
+and loads it on demand when that request becomes active; downloads and file-backed
+previews are excluded. Flat SQLite collections, Postman v2.1 import/export, and JSON
+source editing are implemented.
 
 The JSON and XML editors load GtkSourceView's installed language specifications
 for syntax highlighting. They show line numbers, use the adaptive editor style
@@ -88,7 +91,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-These checks pass with 89 headless unit tests, one allocation regression
+These checks pass with 87 headless unit tests, one allocation regression
 test, and three Postman interoperability tests. The interoperability suite imports a
 representative fixture, validates exports against a vendored copy of the official
 v2.1 schema, checks supported-field round trips, and sends original and round-tripped

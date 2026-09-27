@@ -51,6 +51,12 @@ created on demand and unparented when closed. Selecting a lazy request updates i
 existing sidebar row instead of rebuilding the list. The autosave flag is consumed
 before capturing the editor, including when there are no pending changes.
 
+SQLite stores at most one eligible response per request UUID. HTTP workers replace
+that row after completion, and request selection loads it on demand without retaining
+an application-level response cache. Foreign-key cascades delete response metadata,
+headers, notices, and text with the owning request. Downloads and file-backed previews
+are never persisted.
+
 ## Effects and runtime
 
 `Effect` contains plain domain values describing external work. `EffectRunner` is

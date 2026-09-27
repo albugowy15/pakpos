@@ -30,6 +30,7 @@ pub enum Effect {
     CreateCollection(CollectionSummary),
     LoadCollection(CollectionSummary),
     LoadRequest(Uuid),
+    LoadResponse(Uuid),
     SaveCollection(CollectionChanges),
     ImportPostman(PathBuf),
     ExportPostman {
@@ -38,6 +39,7 @@ pub enum Effect {
     },
     ExecuteRequest {
         id: u64,
+        request_id: Uuid,
         request: Request,
     },
     CancelRequest {
@@ -74,6 +76,10 @@ pub enum EffectOutput {
         request_id: Uuid,
         result: Result<CollectionRequest, String>,
     },
+    ResponseLoaded {
+        request_id: Uuid,
+        result: Result<Option<ResponseData>, String>,
+    },
     CollectionSaved {
         changes: CollectionChanges,
         result: Result<(), String>,
@@ -86,6 +92,7 @@ pub enum EffectOutput {
     RequestExecuted {
         id: u64,
         result: Result<ResponseData, String>,
+        response_storage_error: Option<String>,
     },
     RequestCancelled {
         id: u64,

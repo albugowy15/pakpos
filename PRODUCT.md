@@ -122,9 +122,13 @@ Implementation constraints:
 - Enforce the response preview limit before building a full string, JSON parse tree,
   or GTK text buffer. Avoid retaining redundant raw, formatted, and widget copies
   where possible, and release temporary parsing/formatting allocations promptly.
-- Retain only the current response. Release previous response data when replacing
-  it or switching requests, and release abandoned request tasks and transfer buffers
-  after completion or cancellation. Do not build an implicit response history.
+- Persist at most the latest eligible response for each request in SQLite so
+  switching requests restores its response without retaining response bodies in an
+  application cache. Store empty and in-memory text responses only; never persist
+  downloads, blobs, or file-backed text previews. Replace the row on a new send and
+  delete it through the request's foreign-key cascade. Release abandoned tasks and
+  transfer buffers after completion or cancellation. Response data must never enter
+  Postman exports.
 - Keep JSON editing native; do not introduce a language server or browser runtime.
 - Avoid unbounded caches, background services, and duplicate collection models.
   Load collection and request-list metadata without eagerly loading every request body.
@@ -256,6 +260,12 @@ are never embedded in the collection database or Postman exports.
 ## Response behavior
 
 Show response headers and the readable or downloaded body in the response tabs.
+Associate each retained response with its request UUID and restore it when that
+request becomes active. A request without a retained response shows an empty response
+area; a late completion must update only the request that originated it.
+Above the tabs, show the HTTP status code and reason, elapsed response time with an
+adaptive unit (milliseconds, seconds, minutes, hours, days, or weeks), and response
+body size with an adaptive unit from bytes through exabytes.
 Present validation, transport, and disk failures as transient, dismissible toasts
 rather than reserving permanent response space for a status label. Preserve repeated
 response headers. A HEAD response or response with no body shows a clear empty state
@@ -358,10 +368,12 @@ manual confirmation prompt. Confirm deletion of a request. No recent-file system
 Persist request names, methods, URLs, ordered headers and enabled states, selected
 body mode, textual body source, URL-encoded fields/enabled states, multipart
 fields/types/enabled states, and file references.
-Do not persist response bodies or download contents. On Postman import, resolve a
-relative multipart file reference against the imported file's directory and retain
-enough source context to target the same file later. On export to another directory,
-rebase file references when possible so they continue to identify the same files.
+Persist only the latest eligible response for each request: metadata, ordered headers,
+notices, and an empty or in-memory text body. Do not persist binary bodies, downloaded
+contents, or file-backed text previews. On Postman import, resolve a relative
+multipart file reference against the imported file's directory and retain enough
+source context to target the same file later. On export to another directory, rebase
+file references when possible so they continue to identify the same files.
 File references are not portable attachments; explain this and allow users to
 reselect missing files before sending.
 

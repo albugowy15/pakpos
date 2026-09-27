@@ -256,7 +256,7 @@ mod tests {
         value.reason = "Not Found".to_owned();
         value.elapsed = std::time::Duration::from_millis(12);
         value.body_size = 1536;
-        assert_eq!(value.summary(), "404 Not Found  •  12 ms  •  1.5 KiB");
+        assert_eq!(value.summary(), "404 Not Found  •  12 ms  •  1.5 KB");
     }
 
     #[test]
