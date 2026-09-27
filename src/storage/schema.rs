@@ -72,6 +72,39 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), StorageError
                 PRIMARY KEY (request_id, position)
             ) STRICT;
 
+            CREATE TABLE IF NOT EXISTS responses (
+                request_id TEXT PRIMARY KEY NOT NULL
+                    REFERENCES requests(node_id) ON DELETE CASCADE,
+                status INTEGER NOT NULL CHECK (status BETWEEN 100 AND 999),
+                reason TEXT NOT NULL,
+                elapsed_micros INTEGER NOT NULL CHECK (elapsed_micros >= 0),
+                body_size INTEGER NOT NULL CHECK (body_size >= 0),
+                body_kind TEXT NOT NULL CHECK (
+                    body_kind IN ('empty', 'json', 'plain', 'html')
+                ),
+                body_text TEXT,
+                truncated INTEGER NOT NULL CHECK (truncated IN (0, 1)),
+                CHECK (
+                    (body_kind = 'empty' AND body_text IS NULL AND truncated = 0)
+                    OR (body_kind != 'empty' AND body_text IS NOT NULL)
+                )
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS response_headers (
+                request_id TEXT NOT NULL REFERENCES responses(request_id) ON DELETE CASCADE,
+                position INTEGER NOT NULL CHECK (position >= 0),
+                name TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (request_id, position)
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS response_notices (
+                request_id TEXT NOT NULL REFERENCES responses(request_id) ON DELETE CASCADE,
+                position INTEGER NOT NULL CHECK (position >= 0),
+                notice TEXT NOT NULL,
+                PRIMARY KEY (request_id, position)
+            ) STRICT;
+
             CREATE TABLE IF NOT EXISTS application_settings (
                 key TEXT PRIMARY KEY NOT NULL,
                 value TEXT NOT NULL

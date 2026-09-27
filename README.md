@@ -129,6 +129,9 @@ excluded from the default headless suite; see
 
 Pakpos keeps native collections in one embedded SQLite database under the Linux user-data directory. Collection and request records use stable IDs, and request details are loaded on demand so listing collections does not load every request body. Saving an edit updates only the affected records in a transaction rather than rewriting unrelated collections.
 
-Postman Collection v2.1 JSON will remain an explicit import/export format instead of Pakpos's native working format. Multipart uploads will continue to reference external files; Pakpos will not copy file contents or response bodies into the collection database.
+Postman Collection v2.1 JSON will remain an explicit import/export format instead
+of Pakpos's native working format. Multipart uploads continue to reference external
+files. SQLite stores only the latest empty or in-memory text response per request;
+binary downloads and file-backed response previews remain external.
 
 Maintainers can follow the [release guide](RELEASE.md) to prepare a version and publish it through the tag-triggered release workflow.

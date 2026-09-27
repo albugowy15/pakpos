@@ -20,14 +20,13 @@ use std::{
 
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry, FileDialog, HeaderBar,
-    Label, ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, TextView, ToggleButton,
-    gio, glib, prelude::*,
+    Label, ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, ToggleButton, gio, glib,
+    prelude::*,
 };
 use pakpos::{
-    app::{Action, AppEvent, AppState, DeferredAction, EffectOutput},
+    app::{Action, AppEvent, AppState, DeferredAction, Effect, EffectOutput},
     collections::CollectionSummary,
     models::HttpMethod,
-    net::ResponseData,
 };
 
 use crate::runtime::EffectRunner;
@@ -42,12 +41,13 @@ mod toast;
 mod tests;
 
 use self::editor::{
-    AutosaveTrigger, SourceViewerWidgets, apply_request, autosave_on_blur, build_body_page,
-    build_headers_page, build_source_viewer, collect_request, readonly_text_view, request_autosave,
-    scrolled, set_source_content_type,
+    AutosaveTrigger, autosave_on_blur, build_body_page, build_headers_page, build_source_viewer,
+    collect_request, readonly_text_view, request_autosave, scrolled,
 };
-use self::flow::{autosave_current_collection, capture_active_request, collection_is_dirty};
-use self::sidebar::{build_sidebar, setup_collection_actions};
+use self::flow::{
+    apply_loaded_request, autosave_current_collection, capture_active_request, collection_is_dirty,
+};
+use self::sidebar::{build_sidebar, render_request_buttons, setup_collection_actions};
 use self::toast::Toast;
 
 pub(super) fn set_accessible_label(widget: &impl IsA<gtk::Widget>, label: &str) {
@@ -73,8 +73,21 @@ struct SidebarWidgetHandles {
     applied_search: Rc<RefCell<String>>,
     requests: ListBox,
     request_rows: Rc<RefCell<HashMap<uuid::Uuid, ListBoxRow>>>,
+    active_request_popover: Rc<RefCell<Option<gtk::Popover>>>,
     status: Label,
     autosave: AutosaveTrigger,
+}
+
+impl Drop for SidebarWidgetHandles {
+    fn drop(&mut self) {
+        let Some(popover) = self.active_request_popover.borrow_mut().take() else {
+            return;
+        };
+        popover.set_visible(false);
+        if popover.parent().is_some() {
+            popover.unparent();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -268,18 +281,25 @@ pub fn build(application: &Application) {
         }
     });
 
+    let response_metadata = Label::builder()
+        .accessible_role(gtk::AccessibleRole::Status)
+        .halign(gtk::Align::End)
+        .selectable(true)
+        .visible(false)
+        .build();
     let response_notebook = Notebook::new();
     response_notebook.set_vexpand(true);
     let response_body = build_source_viewer();
     set_accessible_label(&response_body.view, "Response body");
     set_accessible_shortcut(&response_body.view, "Control+F");
-    response_notebook.append_page(&response_body.root, Some(&Label::new(Some("Body"))));
+    response_notebook.append_page(&response_body.root, Some(&Label::new(Some("Response"))));
     let response_headers = readonly_text_view();
     set_accessible_label(&response_headers, "Response headers");
     response_notebook.append_page(
         &scrolled(&response_headers),
         Some(&Label::new(Some("Headers"))),
     );
+    response_panel.append(&response_metadata);
     response_panel.append(&response_notebook);
     main.set_start_child(Some(&request_panel));
     main.set_end_child(Some(&response_panel));
@@ -294,6 +314,11 @@ pub fn build(application: &Application) {
         headers_box: headers_box.clone(),
         header_rows: header_rows.clone(),
         body: body.clone(),
+        response: editor::ResponseWidgets {
+            body: response_body,
+            metadata: response_metadata,
+            headers: response_headers,
+        },
     });
     setup_collection_actions(
         application,
@@ -305,26 +330,35 @@ pub fn build(application: &Application) {
     );
     setup_postman_actions(&window, &sidebar, &editor_widgets, &state);
     let send_request: Rc<dyn Fn()> = Rc::new({
-        let method = method.clone();
-        let url = url.clone();
-        let body = body.clone();
-        let header_rows = header_rows.clone();
+        let editor = Rc::downgrade(&editor_widgets);
+        let sidebar = Rc::downgrade(&sidebar);
         let send_group = send_group.downgrade();
         let cancel = cancel.downgrade();
         let toast = toast.clone();
-        let response_body = response_body.clone();
-        let response_headers = response_headers.clone();
         let state = state.clone();
 
         move || {
-            let (Some(send_group), Some(cancel)) = (send_group.upgrade(), cancel.upgrade()) else {
+            let (Some(editor), Some(sidebar), Some(send_group), Some(cancel)) = (
+                editor.upgrade(),
+                sidebar.upgrade(),
+                send_group.upgrade(),
+                cancel.upgrade(),
+            ) else {
                 return;
             };
             if state.active_request_id.get().is_some() {
                 return;
             }
-
-            let request = match collect_request(&method, &url, &header_rows, &body) {
+            if state.collection_busy.get() {
+                toast.error("Please wait for the current collection operation.");
+                return;
+            }
+            let request = match collect_request(
+                &editor.method,
+                &editor.url,
+                &editor.header_rows,
+                &editor.body,
+            ) {
                 Ok(request) => request,
                 Err(error) => {
                     toast.error(&error);
@@ -332,30 +366,49 @@ pub fn build(application: &Application) {
                 }
             };
 
-            let update = state.update(Action::SendRequest(request));
+            let update = state.update(Action::SendRequest { request });
+            let request_added = matches!(update.event, AppEvent::RequestAdded(_));
             let Some(effect) = update.effect else {
+                toast.error("Create or select a request first.");
                 return;
             };
+            let Effect::ExecuteRequest { request_id, .. } = &effect else {
+                return;
+            };
+            let request_id = *request_id;
+            if request_added {
+                render_request_buttons(&state, &sidebar, &editor);
+                request_autosave(&sidebar.autosave);
+            }
             set_request_running(&send_group, &cancel, true);
-            response_body.view.buffer().set_text("");
-            response_body.reset_search();
-            set_source_content_type(&response_body.view, None);
-            response_headers.buffer().set_text("");
+            editor.response.clear();
 
             let state = state.clone();
             let send_group = send_group.clone();
             let cancel = cancel.clone();
             let toast = toast.clone();
-            let response_body = response_body.clone();
-            let response_headers = response_headers.clone();
+            let response = editor.response.clone();
             let effects = state.effects.clone();
             effects.run(effect, move |output| {
-                let EffectOutput::RequestExecuted { id, result } = output else {
+                let EffectOutput::RequestExecuted {
+                    id,
+                    result,
+                    response_storage_error,
+                } = output
+                else {
                     return;
                 };
                 if state.update(Action::RequestCompleted { id }).accepted {
                     set_request_running(&send_group, &cancel, false);
-                    display_result(result, &toast, &response_body, &response_headers);
+                    let is_selected = state
+                        .collection
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|session| session.active_request() == Some(request_id));
+                    display_result(result, is_selected, &toast, &response);
+                    if let Some(error) = response_storage_error {
+                        toast.error(&format!("Could not save the response: {error}"));
+                    }
                 }
             });
         }
@@ -405,54 +458,55 @@ pub fn build(application: &Application) {
 
     let paste_curl_action = gio::SimpleAction::new("paste-curl", None);
     paste_curl_action.connect_activate({
-        let method = method.clone();
-        let url = url.clone();
-        let headers_box = headers_box.clone();
-        let header_rows = header_rows.clone();
-        let body = body.clone();
+        let sidebar = Rc::downgrade(&sidebar);
+        let editor = Rc::downgrade(&editor_widgets);
         let state = state.clone();
         let toast = toast.clone();
         let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
         move |_, _| {
             clipboard.read_text_async(None::<&gio::Cancellable>, {
-                let method = method.clone();
-                let url = url.clone();
-                let headers_box = headers_box.clone();
-                let header_rows = header_rows.clone();
-                let body = body.clone();
+                let sidebar = sidebar.clone();
+                let editor = editor.clone();
                 let state = state.clone();
                 let toast = toast.clone();
-                move |result| match result {
-                    Ok(Some(text)) => {
-                        match state.update(Action::ImportCurl(text.to_string())).event {
-                            AppEvent::CurlImported(Ok(import)) => {
-                                state.applying_editor.set(true);
-                                apply_request(
-                                    &import.request,
-                                    &method,
-                                    &url,
-                                    &headers_box,
-                                    &header_rows,
-                                    &body,
-                                );
-                                state.applying_editor.set(false);
-                                request_autosave(&body.autosave);
-                                let message = if import.warnings.is_empty() {
-                                    "Pasted the cURL request.".to_owned()
-                                } else {
-                                    format!(
-                                        "Pasted the cURL request. {}",
-                                        import.warnings.join(" ")
-                                    )
-                                };
-                                toast.message(&message);
+                move |result| {
+                    let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade())
+                    else {
+                        return;
+                    };
+                    match result {
+                        Ok(Some(text)) => {
+                            capture_active_request(&state, &sidebar, &editor);
+                            match state.update(Action::ImportCurl(text.to_string())).event {
+                                AppEvent::CurlImported(Ok(import)) => {
+                                    apply_loaded_request(
+                                        import.request_id,
+                                        &state,
+                                        &sidebar,
+                                        &editor,
+                                    );
+                                    editor.response.clear();
+                                    render_request_buttons(&state, &sidebar, &editor);
+                                    request_autosave(&sidebar.autosave);
+                                    let message = if import.warnings.is_empty() {
+                                        "Created a request from cURL.".to_owned()
+                                    } else {
+                                        format!(
+                                            "Created a request from cURL. {}",
+                                            import.warnings.join(" ")
+                                        )
+                                    };
+                                    toast.message(&message);
+                                }
+                                AppEvent::CurlImported(Err(error)) => toast.error(&error),
+                                _ => toast.error("Could not import the cURL request."),
                             }
-                            AppEvent::CurlImported(Err(error)) => toast.error(&error),
-                            _ => toast.error("Could not import the cURL request."),
+                        }
+                        Ok(None) => toast.error("The clipboard has no text."),
+                        Err(error) => {
+                            toast.error(&format!("Could not read the clipboard: {error}"))
                         }
                     }
-                    Ok(None) => toast.error("The clipboard has no text."),
-                    Err(error) => toast.error(&format!("Could not read the clipboard: {error}")),
                 }
             });
         }
@@ -629,25 +683,19 @@ fn show_message(summary: &Label, message: &str) {
 }
 
 fn display_result(
-    result: Result<ResponseData, String>,
+    result: Result<pakpos::net::ResponseData, String>,
+    is_selected: bool,
     toast: &Toast,
-    body: &SourceViewerWidgets,
-    headers: &TextView,
+    response_widgets: &editor::ResponseWidgets,
 ) {
     match result {
-        Ok(response) => {
-            let content_type = response.content_type();
-            body.reset_search();
-            set_source_content_type(&body.view, content_type);
-            body.view.buffer().set_text(&response.display_body());
-            headers.buffer().set_text(&response.display_headers());
-        }
+        Ok(response) if is_selected => response_widgets.display(&response),
+        Ok(_) => {}
         Err(error) => {
             toast.error(&error);
-            body.view.buffer().set_text("");
-            body.reset_search();
-            set_source_content_type(&body.view, None);
-            headers.buffer().set_text("");
+            if is_selected {
+                response_widgets.clear();
+            }
         }
     }
 }

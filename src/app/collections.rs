@@ -61,7 +61,6 @@ pub struct RequestListItem<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoveRequestResult {
     pub removed_active: bool,
-    pub next_request: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,13 +92,14 @@ impl CollectionSession {
                 request: None,
                 saved_request: None,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let active_request = requests.first().map(|request| request.node.id);
         Self {
             saved_summary: Some(summary.clone()),
             summary,
             requests,
             deleted_nodes: Vec::new(),
-            active_request: None,
+            active_request,
         }
     }
 
@@ -199,13 +199,6 @@ impl CollectionSession {
         Some(loaded)
     }
 
-    pub fn clear_active_request(&mut self, request_id: Uuid) {
-        if self.active_request == Some(request_id) {
-            self.active_request = None;
-            self.release_inactive_requests();
-        }
-    }
-
     pub fn apply_loaded_request(&mut self, loaded: CollectionRequest) -> bool {
         let request_id = loaded.node.id;
         let Some(request) = self
@@ -228,13 +221,12 @@ impl CollectionSession {
     }
 
     pub fn add_request(&mut self) -> Uuid {
+        self.add_request_with(Request::default())
+    }
+
+    pub fn add_request_with(&mut self, request: Request) -> Uuid {
         let position = self.next_position();
-        let request = CollectionRequest::new(
-            self.summary.id,
-            "HTTP Request",
-            position,
-            Request::default(),
-        );
+        let request = CollectionRequest::new(self.summary.id, "HTTP Request", position, request);
         let request_id = request.node.id;
         self.requests.push(SessionRequest {
             node: request.node,
@@ -298,17 +290,10 @@ impl CollectionSession {
                 self.deleted_nodes.push(removed.node.id);
             }
         }
-        let next_request = if removed_active {
-            let next = self.first_request();
-            self.active_request = None;
-            next
-        } else {
-            self.active_request
-        };
-        RemoveRequestResult {
-            removed_active,
-            next_request,
+        if removed_active {
+            self.active_request = self.first_request();
         }
+        RemoveRequestResult { removed_active }
     }
 
     pub fn pending_changes(&self) -> Option<CollectionChanges> {
@@ -538,6 +523,22 @@ mod tests {
 
         assert!(!session.is_dirty());
         assert!(session.request(id).is_none());
+        assert_eq!(session.active_request(), Some(id));
+    }
+
+    #[test]
+    fn removing_the_active_request_selects_the_first_remaining_request() {
+        let summary = CollectionSummary::new("API");
+        let mut session = CollectionSession::empty(summary);
+        let first = session.add_request();
+        let removed = session.add_request();
+        session.add_request();
+        session.select_request(removed);
+
+        let result = session.remove_request(removed);
+
+        assert!(result.removed_active);
+        assert_eq!(session.active_request(), Some(first));
     }
 
     #[test]

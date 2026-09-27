@@ -287,6 +287,7 @@ pub(super) fn confirm_delete_request(
         let state = state.clone();
         let sidebar = sidebar.clone();
         let editor = editor.clone();
+        let window = window.downgrade();
         move |response| {
             if response == Ok(1) {
                 remove_request(request_id, &state, &sidebar, &editor);
@@ -294,6 +295,11 @@ pub(super) fn confirm_delete_request(
                     &sidebar.status,
                     "Deleted the request. Saving automatically…",
                 );
+                glib::idle_add_local_once(move || {
+                    if let Some(window) = window.upgrade() {
+                        gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
+                    }
+                });
             }
         }
     });

@@ -18,7 +18,7 @@ use std::{
 use crate::{
     app::{CollectionChanges, CollectionSession, Effect, RemoveRequestResult},
     collections::{CollectionNode, CollectionRequest, CollectionSummary},
-    curl::{CurlImport, from_command, to_command},
+    curl::{from_command, to_command},
     models::Request,
 };
 use uuid::Uuid;
@@ -32,6 +32,7 @@ use uuid::Uuid;
 pub struct AppState {
     pub next_request_id: Cell<u64>,
     pub active_request_id: Cell<Option<u64>>,
+    active_response_request_id: Cell<Option<Uuid>>,
     pub collection: RefCell<Option<CollectionSession>>,
     pub collection_busy: Cell<bool>,
     pub close_after_autosave: Cell<bool>,
@@ -49,7 +50,9 @@ pub enum DeferredAction {
 
 #[derive(Debug, Clone)]
 pub enum Action {
-    SendRequest(Request),
+    SendRequest {
+        request: Request,
+    },
     CancelRequest,
     RequestCompleted {
         id: u64,
@@ -68,12 +71,12 @@ pub enum Action {
     RemoveCollectionRequest(Uuid),
     SelectCollectionRequest(Uuid),
     ApplyLoadedRequest(CollectionRequest),
-    ClearActiveRequest(Uuid),
     CollectionSaved(CollectionChanges),
     ListCollections,
     CreateCollection(CollectionSummary),
     LoadCollection(CollectionSummary),
     LoadRequest(Uuid),
+    LoadResponse(Uuid),
     SaveCollection(CollectionChanges),
     ImportPostman(PathBuf),
     ExportPostman {
@@ -108,28 +111,60 @@ pub enum AppEvent {
         id: Uuid,
         loaded: bool,
     },
-    CurlImported(Result<CurlImport, String>),
+    CurlImported(Result<ImportedCurl, String>),
     CurlExported(Result<String, String>),
     DeferredAfterSave(Option<DeferredAction>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedCurl {
+    pub request_id: Uuid,
+    pub warnings: Vec<String>,
+}
+
 impl AppState {
+    pub fn request_is_running_for(&self, request_id: Uuid) -> bool {
+        self.active_response_request_id.get() == Some(request_id)
+    }
+
     /// Applies an application action and describes the external work it needs.
     pub fn update(&self, action: Action) -> Update {
         match action {
-            Action::SendRequest(request) => {
+            Action::SendRequest { request } => {
                 if self.active_request_id.get().is_some() {
                     return Update::default();
                 }
+                let (request_id, request_added) = {
+                    let mut collection = self.collection.borrow_mut();
+                    let Some(session) = collection.as_mut() else {
+                        return Update::default();
+                    };
+                    match session.active_request() {
+                        Some(request_id) => (request_id, false),
+                        None if session.first_request().is_none() => {
+                            (session.add_request_with(request.clone()), true)
+                        }
+                        None => return Update::default(),
+                    }
+                };
                 // IDs correlate asynchronous completions; wrapping avoids a
                 // theoretical debug overflow, and only one ID can be live.
                 let id = self.next_request_id.get().wrapping_add(1);
                 self.next_request_id.set(id);
                 self.active_request_id.set(Some(id));
+                self.active_response_request_id.set(Some(request_id));
                 Update {
                     accepted: true,
-                    effect: Some(Effect::ExecuteRequest { id, request }),
-                    event: AppEvent::None,
+                    effect: Some(Effect::ExecuteRequest {
+                        id,
+                        request_id,
+                        request,
+                    }),
+                    event: if request_added {
+                        AppEvent::RequestAdded(request_id)
+                    } else {
+                        AppEvent::None
+                    },
                 }
             }
             Action::CancelRequest => {
@@ -147,6 +182,7 @@ impl AppState {
                     return Update::default();
                 }
                 self.active_request_id.set(None);
+                self.active_response_request_id.take();
                 Update {
                     accepted: true,
                     effect: None,
@@ -223,14 +259,6 @@ impl AppState {
                     ..Update::default()
                 }
             }
-            Action::ClearActiveRequest(id) => {
-                let mut session = self.collection.borrow_mut();
-                let Some(session) = session.as_mut() else {
-                    return Update::default();
-                };
-                session.clear_active_request(id);
-                accepted(AppEvent::None)
-            }
             Action::CollectionSaved(changes) => {
                 let mut session = self.collection.borrow_mut();
                 let Some(session) = session.as_mut() else {
@@ -250,6 +278,7 @@ impl AppState {
                 self.begin_collection_effect(Effect::LoadCollection(collection))
             }
             Action::LoadRequest(id) => self.begin_collection_effect(Effect::LoadRequest(id)),
+            Action::LoadResponse(id) => self.begin_collection_effect(Effect::LoadResponse(id)),
             Action::SaveCollection(changes) => {
                 self.begin_collection_effect(Effect::SaveCollection(changes))
             }
@@ -270,9 +299,21 @@ impl AppState {
                     ..Update::default()
                 }
             }
-            Action::ImportCurl(command) => accepted(AppEvent::CurlImported(
-                from_command(&command).map_err(|error| error.to_string()),
-            )),
+            Action::ImportCurl(command) => {
+                let imported = from_command(&command).map_err(|error| error.to_string());
+                let result = imported.and_then(|imported| {
+                    let mut collection = self.collection.borrow_mut();
+                    let session = collection
+                        .as_mut()
+                        .ok_or_else(|| "Create or select a collection first.".to_owned())?;
+                    let request_id = session.add_request_with(imported.request);
+                    Ok(ImportedCurl {
+                        request_id,
+                        warnings: imported.warnings,
+                    })
+                });
+                accepted(AppEvent::CurlImported(result))
+            }
             Action::ExportCurl(request) => accepted(AppEvent::CurlExported(
                 to_command(request).map_err(|error| error.to_string()),
             )),
@@ -325,19 +366,38 @@ fn accepted(event: AppEvent) -> Update {
 mod tests {
     use super::*;
 
+    fn state_with_request() -> (AppState, Uuid) {
+        let state = AppState::default();
+        let mut session = CollectionSession::empty(CollectionSummary::new("API"));
+        let request_id = session.add_request();
+        state.update(Action::SetCollection(session));
+        (state, request_id)
+    }
+
     #[test]
     fn one_request_runs_at_a_time_and_stale_completions_are_ignored() {
-        let state = AppState::default();
-        let first = state.update(Action::SendRequest(Request::default()));
+        let (state, request_id) = state_with_request();
+        let first = state.update(Action::SendRequest {
+            request: Request::default(),
+        });
         assert!(first.accepted);
-        let Effect::ExecuteRequest { id, .. } = first.effect.as_ref().unwrap() else {
+        let Effect::ExecuteRequest {
+            id,
+            request_id: effect_request_id,
+            ..
+        } = first.effect.as_ref().unwrap()
+        else {
             panic!("expected request effect");
         };
         let id = *id;
+        assert_eq!(*effect_request_id, request_id);
+        assert!(state.request_is_running_for(request_id));
 
         assert!(
             !state
-                .update(Action::SendRequest(Request::default()))
+                .update(Action::SendRequest {
+                    request: Request::default(),
+                })
                 .accepted
         );
         assert!(
@@ -347,18 +407,121 @@ mod tests {
         );
         assert!(state.update(Action::RequestCompleted { id }).accepted);
         assert!(state.active_request_id.get().is_none());
+        assert!(!state.request_is_running_for(request_id));
     }
 
     #[test]
     fn cancelling_emits_an_effect_without_finishing_early() {
-        let state = AppState::default();
-        state.update(Action::SendRequest(Request::default()));
+        let (state, _) = state_with_request();
+        state.update(Action::SendRequest {
+            request: Request::default(),
+        });
 
         let update = state.update(Action::CancelRequest);
 
         assert!(update.accepted);
         assert!(matches!(update.effect, Some(Effect::CancelRequest { .. })));
         assert!(state.active_request_id.get().is_some());
+    }
+
+    #[test]
+    fn sending_from_an_empty_collection_creates_the_request_item() {
+        let state = AppState::default();
+        state.update(Action::SetCollection(CollectionSession::empty(
+            CollectionSummary::new("API"),
+        )));
+        let request = Request {
+            url: "https://example.com/users".to_owned(),
+            ..Request::default()
+        };
+
+        let update = state.update(Action::SendRequest {
+            request: request.clone(),
+        });
+
+        let AppEvent::RequestAdded(request_id) = update.event else {
+            panic!("expected the sent request to be added");
+        };
+        let Some(Effect::ExecuteRequest {
+            request_id: effect_request_id,
+            ..
+        }) = update.effect
+        else {
+            panic!("expected request effect");
+        };
+        assert_eq!(effect_request_id, request_id);
+        let collection = state.collection.borrow();
+        let session = collection.as_ref().unwrap();
+        assert_eq!(session.active_request(), Some(request_id));
+        assert_eq!(session.request(request_id), Some(&request));
+        assert_eq!(session.request_items().count(), 1);
+    }
+
+    #[test]
+    fn loaded_collection_selects_its_first_request_without_adding_an_item() {
+        let summary = CollectionSummary::new("API");
+        let existing = CollectionRequest::new(summary.id, "Existing", 0, Request::default());
+        let existing_id = existing.node.id;
+        let state = AppState::default();
+        state.update(Action::SetCollection(CollectionSession::from_requests(
+            summary,
+            vec![existing.node],
+        )));
+
+        let update = state.update(Action::SendRequest {
+            request: Request::default(),
+        });
+
+        assert!(update.accepted);
+        let Some(Effect::ExecuteRequest { request_id, .. }) = update.effect else {
+            panic!("expected request effect");
+        };
+        assert_eq!(request_id, existing_id);
+        assert_eq!(
+            state
+                .collection
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .request_items()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn importing_curl_creates_and_selects_a_new_request_item() {
+        let (state, original_id) = state_with_request();
+
+        let update = state.update(Action::ImportCurl(
+            "curl https://example.com/imported".to_owned(),
+        ));
+
+        let AppEvent::CurlImported(Ok(imported)) = update.event else {
+            panic!("expected successful cURL import");
+        };
+        assert_ne!(imported.request_id, original_id);
+        let collection = state.collection.borrow();
+        let session = collection.as_ref().unwrap();
+        assert_eq!(session.active_request(), Some(imported.request_id));
+        assert_eq!(session.request_items().count(), 2);
+        assert_eq!(
+            session.request(imported.request_id).unwrap().url,
+            "https://example.com/imported"
+        );
+    }
+
+    #[test]
+    fn failed_curl_import_does_not_create_a_request_item() {
+        let (state, original_id) = state_with_request();
+
+        let update = state.update(Action::ImportCurl("not curl".to_owned()));
+
+        assert!(matches!(update.event, AppEvent::CurlImported(Err(_))));
+        let collection = state.collection.borrow();
+        let session = collection.as_ref().unwrap();
+        assert_eq!(session.active_request(), Some(original_id));
+        assert_eq!(session.request_items().count(), 1);
     }
 
     #[test]

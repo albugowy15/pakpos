@@ -7,8 +7,9 @@
 
 use super::*;
 use editor::{
-    EditorWidgetHandles, add_form_urlencoded_row, add_header_row, add_multipart_row,
-    build_source_viewer, json_style_scheme_id, set_source_content_type,
+    EditorWidgetHandles, ResponseWidgets, add_form_urlencoded_row, add_header_row,
+    add_multipart_row, apply_request, build_source_viewer, json_style_scheme_id,
+    set_source_content_type,
 };
 use pakpos::{app::CollectionSession, models::Request};
 use sidebar::{build_request_context_menu, render_request_buttons};
@@ -55,6 +56,11 @@ fn widget_lifetimes() {
         headers_box,
         header_rows,
         body,
+        response: ResponseWidgets {
+            body: response_body.clone(),
+            metadata: Label::new(None),
+            headers: gtk::TextView::new(),
+        },
     });
     assert_has_accessible_label(&sidebar.collection_picker);
     assert_has_accessible_label(&sidebar.search);
@@ -327,10 +333,37 @@ fn widget_lifetimes() {
     render_request_buttons(&state, &sidebar, &editor);
     assert!(weak_row.upgrade().is_none(), "replaced sidebar row leaked");
 
+    let row = sidebar.request_rows.borrow()[&id]
+        .clone()
+        .upcast::<gtk::Widget>();
+    let weak_row = row.downgrade();
+    let menu = build_request_context_menu(&row, id, &state, &sidebar, &editor);
+    assert!(menu.parent().is_some(), "context menu was not parented");
+    drop(row);
+    render_request_buttons(&state, &sidebar, &editor);
+    assert!(
+        menu.parent().is_none(),
+        "context menu remained parented during request-list rebuild"
+    );
+    assert!(
+        weak_row.upgrade().is_none(),
+        "row with an open context menu leaked during replacement"
+    );
+    drop(menu);
+
     // An unchanged capture must consume the autosave flag, including a no-op save.
     state.collection.borrow_mut().take();
     state.autosave_requested.set(true);
     autosave_current_collection(&state, &sidebar, &editor, &sidebar.status, &window);
     assert!(!state.autosave_requested.get());
+
+    let row = sidebar.requests.first_child().unwrap();
+    let menu = build_request_context_menu(&row, id, &state, &sidebar, &editor);
+    drop(row);
+    drop(sidebar);
+    assert!(
+        menu.parent().is_none(),
+        "context menu remained parented during sidebar teardown"
+    );
     window.destroy();
 }

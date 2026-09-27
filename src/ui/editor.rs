@@ -19,6 +19,7 @@ use gtk::{
 use pakpos::models::{
     FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
 };
+use pakpos::net::ResponseData;
 use sourceview5::prelude::{BufferExt, SearchSettingsExt};
 
 use super::set_accessible_label;
@@ -78,6 +79,7 @@ pub(super) struct EditorWidgetHandles {
     pub(super) headers_box: GtkBox,
     pub(super) header_rows: Rc<RefCell<Vec<HeaderWidgets>>>,
     pub(super) body: BodyWidgets,
+    pub(super) response: ResponseWidgets,
 }
 
 #[derive(Clone)]
@@ -95,6 +97,37 @@ impl SourceViewerWidgets {
         self.search_entry.set_text("");
         self.search_entry.remove_css_class("error");
         self.search_revealer.set_reveal_child(false);
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct ResponseWidgets {
+    pub(super) body: SourceViewerWidgets,
+    pub(super) metadata: gtk::Label,
+    pub(super) headers: TextView,
+}
+
+impl ResponseWidgets {
+    pub(super) fn clear(&self) {
+        self.body.view.buffer().set_text("");
+        self.body.reset_search();
+        set_source_content_type(&self.body.view, None);
+        self.metadata.set_text("");
+        self.metadata.set_visible(false);
+        self.headers.buffer().set_text("");
+    }
+
+    pub(super) fn display(&self, response: &ResponseData) {
+        let content_type = response.content_type();
+        self.body.reset_search();
+        set_source_content_type(&self.body.view, content_type);
+        self.metadata.set_text(&response.summary());
+        self.metadata.set_visible(true);
+        self.body
+            .view
+            .buffer()
+            .set_text(response.display_body().as_ref());
+        self.headers.buffer().set_text(&response.display_headers());
     }
 }
 

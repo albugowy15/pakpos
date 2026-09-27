@@ -3,8 +3,9 @@
 //! The internal `ResponseBodyCollector` consumes network chunks while enforcing the preview
 //! limit before a large string or JSON tree can be created. Text keeps a bounded
 //! decoded preview; attachments, binary data, and oversized bodies stream to a
-//! partial file and are finalized under a collision-free name. Only the current
-//! [`ResponseData`] is retained by the UI.
+//! partial file and are finalized under a collision-free name. In-memory text
+//! responses can be persisted for their request while downloaded and file-backed
+//! responses remain external.
 //!
 //! Classification uses response headers first and a conservative incremental
 //! UTF-8/control-byte probe when no media type is supplied. Download filenames
@@ -67,12 +68,31 @@ pub struct ResponseData {
 }
 
 impl ResponseData {
+    /// Whether this response can be persisted as the request's latest response.
+    ///
+    /// Downloaded bodies and file-backed text previews deliberately remain
+    /// excluded so SQLite never retains external file responses.
+    pub fn is_persistable(&self) -> bool {
+        matches!(
+            &self.body,
+            ResponseBody::Empty
+                | ResponseBody::Text {
+                    saved_path: None,
+                    ..
+                }
+        )
+    }
+
     pub fn summary(&self) -> String {
+        let status = if self.reason.trim().is_empty() {
+            self.status.to_string()
+        } else {
+            format!("{} {}", self.status, self.reason)
+        };
         format!(
-            "{} {}  •  {} ms  •  {}",
-            self.status,
-            self.reason,
-            self.elapsed.as_millis(),
+            "{}  •  {}  •  {}",
+            status,
+            format_elapsed(self.elapsed),
             format_byte_count(self.body_size)
         )
     }
@@ -153,15 +173,42 @@ fn append_notice(text: &mut String, notice: &str) {
 }
 
 fn format_byte_count(bytes: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = 1024 * KIB;
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{:.1} KiB", bytes as f64 / KIB as f64)
-    } else {
-        format!("{bytes} B")
+    const UNITS: [&str; 7] = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
     }
+
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{} {}", one_decimal_without_rounding_up(value), UNITS[unit])
+}
+
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    if elapsed < std::time::Duration::from_secs(1) {
+        return format!("{} ms", elapsed.as_millis());
+    }
+
+    let seconds = elapsed.as_secs_f64();
+    let (value, unit) = if seconds < 60.0 {
+        (seconds, "s")
+    } else if seconds < 60.0 * 60.0 {
+        (seconds / 60.0, "min")
+    } else if seconds < 24.0 * 60.0 * 60.0 {
+        (seconds / (60.0 * 60.0), "h")
+    } else if seconds < 7.0 * 24.0 * 60.0 * 60.0 {
+        (seconds / (24.0 * 60.0 * 60.0), "d")
+    } else {
+        (seconds / (7.0 * 24.0 * 60.0 * 60.0), "wk")
+    };
+    format!("{} {unit}", one_decimal_without_rounding_up(value))
+}
+
+fn one_decimal_without_rounding_up(value: f64) -> String {
+    format!("{:.1}", (value * 10.0).floor() / 10.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1022,6 +1069,46 @@ mod tests {
     }
 
     #[test]
+    fn only_in_memory_text_and_empty_responses_are_persistable() {
+        let response = |body| ResponseData {
+            status: 200,
+            reason: "OK".into(),
+            elapsed: Default::default(),
+            body_size: 0,
+            headers: Vec::new(),
+            body,
+        };
+
+        assert!(response(ResponseBody::Empty).is_persistable());
+        assert!(
+            response(ResponseBody::Text {
+                text: "hello".into(),
+                kind: ResponseTextKind::Plain,
+                truncated: false,
+                saved_path: None,
+                notices: Vec::new(),
+            })
+            .is_persistable()
+        );
+        assert!(
+            !response(ResponseBody::Text {
+                text: "preview".into(),
+                kind: ResponseTextKind::Plain,
+                truncated: true,
+                saved_path: Some(PathBuf::from("response.txt")),
+                notices: Vec::new(),
+            })
+            .is_persistable()
+        );
+        assert!(
+            !response(ResponseBody::Downloaded {
+                path: PathBuf::from("response.bin"),
+            })
+            .is_persistable()
+        );
+    }
+
+    #[test]
     fn complete_utf8_reuses_the_collected_buffer_and_display_borrows_it() {
         let directory = test_directory();
         let mut collector = collector(Some("text/plain; charset=UTF-8"), None, &directory);
@@ -1062,6 +1149,43 @@ mod tests {
             response.content_type(),
             Some("application/json; charset=utf-8")
         );
+    }
+
+    #[test]
+    fn formats_response_time_across_units() {
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_millis(999)),
+            "999 ms"
+        );
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_millis(1_500)),
+            "1.5 s"
+        );
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(90)),
+            "1.5 min"
+        );
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(5_400)),
+            "1.5 h"
+        );
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(129_600)),
+            "1.5 d"
+        );
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(907_200)),
+            "1.5 wk"
+        );
+    }
+
+    #[test]
+    fn formats_response_size_across_units() {
+        assert_eq!(format_byte_count(1023), "1023 B");
+        assert_eq!(format_byte_count(1536), "1.5 KB");
+        assert_eq!(format_byte_count(1_572_864), "1.5 MB");
+        assert_eq!(format_byte_count(1_610_612_736), "1.5 GB");
+        assert_eq!(format_byte_count(1_649_267_441_664), "1.5 TB");
     }
 
     #[test]

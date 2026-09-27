@@ -48,13 +48,21 @@ impl EffectRunner {
                 }
                 complete(EffectOutput::RequestCancelled { id });
             }
-            Effect::ExecuteRequest { id, request } => {
+            Effect::ExecuteRequest {
+                id,
+                request_id,
+                request,
+            } => {
                 let (cancel_sender, cancel_receiver) = oneshot::channel();
                 self.cancellations.borrow_mut().insert(id, cancel_sender);
                 let runner = self.clone();
                 run_background(
                     move || {
-                        tokio::runtime::Builder::new_current_thread()
+                        // Clear the previous response before sending. The final
+                        // replacement below retries this write so a transient
+                        // lock cannot leave stale data after completion.
+                        let _ = replace_stored_response(request_id, None);
+                        let result = tokio::runtime::Builder::new_current_thread()
                             .enable_all()
                             .build()
                             .map_err(|error| format!("Could not start the request worker: {error}"))
@@ -62,11 +70,24 @@ impl EffectRunner {
                                 runtime
                                     .block_on(execute(request, cancel_receiver))
                                     .map_err(|error| error.to_string())
-                            })
+                            });
+                        let response_storage_error =
+                            replace_stored_response(request_id, result.as_ref().ok())
+                                .err()
+                                .map(|error| error.to_string());
+                        Ok((result, response_storage_error))
                     },
-                    move |result| {
+                    move |worker_result| {
                         runner.cancellations.borrow_mut().remove(&id);
-                        complete(EffectOutput::RequestExecuted { id, result });
+                        let (result, response_storage_error) = match worker_result {
+                            Ok(result) => result,
+                            Err(error) => (Err(error), None),
+                        };
+                        complete(EffectOutput::RequestExecuted {
+                            id,
+                            result,
+                            response_storage_error,
+                        });
                     },
                     "The request worker stopped unexpectedly.",
                 );
@@ -141,6 +162,17 @@ impl EffectRunner {
                 move |result| complete(EffectOutput::RequestLoaded { request_id, result }),
                 "The collection worker stopped unexpectedly.",
             ),
+            Effect::LoadResponse(request_id) => run_background(
+                move || {
+                    let store =
+                        CollectionStore::open_default().map_err(|error| error.to_string())?;
+                    store
+                        .load_response(request_id)
+                        .map_err(|error| error.to_string())
+                },
+                move |result| complete(EffectOutput::ResponseLoaded { request_id, result }),
+                "The response worker stopped unexpectedly.",
+            ),
             Effect::SaveCollection(changes) => {
                 let changes = Arc::new(changes);
                 let worker_changes = Arc::clone(&changes);
@@ -203,6 +235,14 @@ impl EffectRunner {
             }
         }
     }
+}
+
+fn replace_stored_response(
+    request_id: uuid::Uuid,
+    response: Option<&pakpos::net::ResponseData>,
+) -> Result<bool, pakpos::storage::StorageError> {
+    let mut store = CollectionStore::open_default()?;
+    store.replace_response(request_id, response)
 }
 
 fn import_postman_file(
