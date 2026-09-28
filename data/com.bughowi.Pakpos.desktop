@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Pakpos
+GenericName=HTTP Client
+Comment=Test HTTP APIs with a native desktop client
+Exec=pakpos
+Icon=com.bughowi.Pakpos
+Terminal=false
+Categories=Development;
+Keywords=HTTP;HTTPS;API;REST;cURL;
+StartupNotify=true

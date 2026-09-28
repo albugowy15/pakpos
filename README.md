@@ -69,7 +69,11 @@ curl --proto '=https' --tlsv1.2 -sSf \
   https://raw.githubusercontent.com/albugowy15/pakpos/main/install.sh | sh
 ```
 
-The installer downloads the GitHub Release archive, verifies its SHA-256 checksum, and installs the `pakpos` executable. It does not install system libraries; GTK 4.10 or newer and GtkSourceView 5 must already be available.
+The installer downloads the GitHub Release archive, verifies its SHA-256 checksum,
+and installs the `pakpos` executable. It also adds a Pakpos launcher to the desktop
+application menu using the freedesktop standard supported by Arch Linux, Debian,
+Ubuntu, and Fedora. It does not install system libraries; GTK 4.10 or newer and
+GtkSourceView 5 must already be available.
 
 To install a specific version, including a prerelease:
 
@@ -89,6 +93,18 @@ curl --proto '=https' --tlsv1.2 -sSf \
 
 Installing into a system directory may require running the final command with the appropriate permissions. Review [`install.sh`](install.sh) before piping it to a shell.
 
+The launcher is installed under `$XDG_DATA_HOME/applications` (or
+`~/.local/share/applications` when `XDG_DATA_HOME` is unset). Set
+`PAKPOS_DATA_HOME` to choose a different data directory. For example, a system-wide
+installation under `/usr/local` uses:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf \
+  https://raw.githubusercontent.com/albugowy15/pakpos/main/install.sh \
+  | sudo PAKPOS_INSTALL_DIR=/usr/local/bin \
+      PAKPOS_DATA_HOME=/usr/local/share sh
+```
+
 ### Build from source
 
 On Arch Linux:
@@ -101,6 +117,12 @@ On Debian or Ubuntu:
 
 ```sh
 sudo apt install build-essential libgtk-4-dev libgtksourceview-5-dev pkg-config
+```
+
+On Fedora:
+
+```sh
+sudo dnf install gcc gtk4-devel gtksourceview5-devel pkgconf-pkg-config rust cargo
 ```
 
 Then build and start the application:

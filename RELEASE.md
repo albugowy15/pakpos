@@ -61,7 +61,8 @@ Pushing the tag starts `.github/workflows/release.yml`. The workflow:
 
 1. Checks that the tag uses semantic versioning and matches `Cargo.toml`.
 2. Repeats formatting, Clippy, test, and locked release-build checks.
-3. Builds and packages the `x86_64-unknown-linux-gnu` executable.
+3. Builds and packages the `x86_64-unknown-linux-gnu` executable, desktop entry,
+   and application icon.
 4. Generates the current version's release notes from commits since the previous tag.
 5. Creates a GitHub Release and uploads the binary archive and checksum.
 
@@ -82,7 +83,8 @@ sha256sum --check pakpos-linux-x86_64.tar.gz.sha256
 tar -tzf pakpos-linux-x86_64.tar.gz
 ```
 
-The archive should contain one executable named `pakpos`.
+The archive should contain the `pakpos` executable plus the desktop entry and icon
+under `share/`.
 
 Finally, verify that the public installer can download and install the new release. For prereleases, pass the tag explicitly because GitHub's `latest` URL selects only the latest stable release:
 

@@ -68,13 +68,17 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release --target "${TARGET}"
 
-      - name: Package release binary
+      - name: Package release files
         shell: bash
         run: |
           set -euo pipefail
           asset="pakpos-linux-x86_64.tar.gz"
           install -Dm755 "target/${TARGET}/release/pakpos" package/pakpos
-          tar -C package -czf "${asset}" pakpos
+          install -Dm644 data/com.bughowi.Pakpos.desktop \
+            package/share/applications/com.bughowi.Pakpos.desktop
+          install -Dm644 data/com.bughowi.Pakpos.svg \
+            package/share/icons/hicolor/scalable/apps/com.bughowi.Pakpos.svg
+          tar -C package -czf "${asset}" pakpos share
           sha256sum "${asset}" > "${asset}.sha256"
 
       - name: Upload release artifacts
