@@ -292,7 +292,7 @@ Classify the body using Content-Type without case sensitivity and ignoring param
 | `application/json` or a subtype ending in `+json` | Pretty-print valid JSON |
 | `application/xml` or a subtype ending in `+xml` | Display XML source as highlighted text |
 | `text/plain` or other `text/*` except HTML | Display selectable plain text |
-| `text/html` or `application/xhtml+xml` | Display HTML source as text |
+| `text/html` or `application/xhtml+xml` | Display HTML source; indent complete single-line bodies |
 | `Content-Disposition: attachment` with a nonempty body | Automatically save as a file, regardless of media type |
 | Other media types | Automatically save as a file |
 | Missing Content-Type | Display valid UTF-8 without binary control bytes as text; otherwise save as a file |
@@ -302,11 +302,16 @@ Honor a supported declared text charset, default to UTF-8, and disclose decoding
 replacement or an unsupported charset. Never render HTML in a browser engine,
 execute scripts, fetch embedded assets, or automatically open downloaded files.
 Provide a simple way to copy displayed response text.
+For complete single-line HTML, insert line breaks and indentation around block
+elements. Preserve original tags, attributes, entities, inline text spacing,
+scripts, styles, and preformatted text. Retain the unmodified decoded source for
+persistence. Already multiline HTML stays as supplied. Fall back to raw source
+when formatting exceeds the preview byte budget or nesting limit.
 
 Keep memory bounded: stream binary responses to disk. Limit the text preview to
 5 MiB of decoded body bytes; if exceeded, preserve the full body in Downloads and
 show a labeled truncated raw preview and saved path. Do not attempt to pretty-print
-truncated JSON. Keep the UI responsive during large responses.
+truncated JSON or HTML. Keep the UI responsive during large responses.
 
 ### Automatic downloads
 

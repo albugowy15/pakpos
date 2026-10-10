@@ -24,6 +24,8 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 - Cancel an in-flight request or allow it to time out after 30 seconds.
 - Inspect response headers and a bounded 5 MiB response preview. Validation and transport errors appear as transient, dismissible toasts.
 - Pretty-print valid JSON responses and inspect their raw source.
+- Automatically indent single-line HTML responses while preserving embedded
+  scripts, styles, and preformatted text.
 - Collapse and expand sections in request editors and the response source viewer
   using gutter arrows or the context menu. Ctrl+Alt+Left/Right collapses/expands
   the current section; add Shift to collapse/expand all. JSON and XML/HTML use

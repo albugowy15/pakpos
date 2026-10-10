@@ -25,6 +25,7 @@ use reqwest::Url;
 use uuid::Uuid;
 
 use crate::config::{DOWNLOAD_FILENAME_BYTE_BUDGET, RESPONSE_PREVIEW_LIMIT};
+use crate::html_format::format_html;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseTextKind {
@@ -124,6 +125,10 @@ impl ResponseData {
                             Cow::Owned(raw)
                         }
                     }
+                } else if *kind == ResponseTextKind::Html && !truncated {
+                    format_html(text)
+                        .map(Cow::Owned)
+                        .unwrap_or(Cow::Borrowed(text.as_str()))
                 } else {
                     Cow::Borrowed(text.as_str())
                 };
@@ -1233,6 +1238,68 @@ mod tests {
         };
         assert_eq!(response.display_body(), "{\n  \"ok\": true\n}");
         fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn formats_single_line_html_previews_and_keeps_the_original_response() {
+        let directory = test_directory();
+        let source = "<!doctype html><html><head><meta charset=utf-8></head><body><h1>Hello 🌍</h1><p>one<br>two</p></body></html>";
+        for content_type in ["Text/HTML; charset=utf-8", "application/xhtml+xml"] {
+            let mut collector = collector(Some(content_type), None, &directory);
+            collector.push(source.as_bytes());
+            let response = ResponseData {
+                status: 200,
+                reason: "OK".to_owned(),
+                elapsed: std::time::Duration::ZERO,
+                body_size: source.len() as u64,
+                headers: Vec::new(),
+                body: collector.finish(),
+            };
+            let displayed = response.display_body();
+            assert!(displayed.starts_with("<!doctype html>\n<html>\n  <head>"));
+            assert!(displayed.contains("\n    <h1>Hello 🌍</h1>\n    <p>one<br>two</p>"));
+            let ResponseBody::Text { text, kind, .. } = &response.body else {
+                panic!("expected HTML text");
+            };
+            assert_eq!(*kind, ResponseTextKind::Html);
+            assert_eq!(text, source);
+            assert_eq!(response.body_size, source.len() as u64);
+            assert!(response.is_persistable());
+        }
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn keeps_multiline_and_truncated_html_as_raw_source() {
+        let source = "<div>\n  <p>Already readable</p>\n</div>";
+        let mut response = ResponseData {
+            status: 200,
+            reason: "OK".to_owned(),
+            elapsed: std::time::Duration::ZERO,
+            body_size: source.len() as u64,
+            headers: Vec::new(),
+            body: ResponseBody::Text {
+                text: source.to_owned(),
+                kind: ResponseTextKind::Html,
+                truncated: false,
+                saved_path: None,
+                notices: Vec::new(),
+            },
+        };
+        assert!(matches!(response.display_body(), Cow::Borrowed(_)));
+        assert_eq!(response.display_body(), source);
+        let truncated_source = "<div><p>Partial response</p>";
+        response.body = ResponseBody::Text {
+            text: truncated_source.to_owned(),
+            kind: ResponseTextKind::Html,
+            truncated: true,
+            saved_path: None,
+            notices: vec!["decoded charset notice".to_owned()],
+        };
+        let displayed = response.display_body();
+        assert!(displayed.starts_with(truncated_source));
+        assert!(displayed.contains("Preview stopped at 5 MiB"));
+        assert!(displayed.contains("decoded charset notice"));
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod body_format;
 pub mod collections;
 pub mod config;
 pub mod curl;
+mod html_format;
 pub mod models;
 pub mod net;
 pub mod postman;

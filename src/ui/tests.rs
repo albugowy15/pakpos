@@ -471,6 +471,78 @@ fn assert_rendered_folding(
         }
     }
 
+    let html_source = "<!doctype html><html><head><meta charset=utf-8><title>Pakpos preview</title></head><body><main><h1>Hello <strong>HTML</strong></h1><p>Readable source<br>without rendering</p></main></body></html>";
+    let html_response = pakpos::response::ResponseData {
+        status: 200,
+        reason: "OK".to_owned(),
+        elapsed: std::time::Duration::from_millis(12),
+        body_size: html_source.len() as u64,
+        headers: vec![pakpos::response::ResponseHeader {
+            name: "Content-Type".to_owned(),
+            value: "text/html; charset=utf-8".to_owned(),
+        }],
+        body: pakpos::response::ResponseBody::Text {
+            text: html_source.to_owned(),
+            kind: pakpos::response::ResponseTextKind::Html,
+            truncated: false,
+            saved_path: None,
+            notices: Vec::new(),
+        },
+    };
+    ResponseWidgets {
+        body: response.clone(),
+        metadata: Label::new(None),
+        headers: gtk::TextView::new(),
+    }
+    .display(&html_response);
+    let formatted_html = html_response.display_body();
+    assert_eq!(editor::buffer_text(&response.view), formatted_html);
+    assert!(formatted_html.contains("\n      <h1>Hello <strong>HTML</strong></h1>"));
+    assert_eq!(
+        response
+            .view
+            .buffer()
+            .downcast::<sourceview5::Buffer>()
+            .unwrap()
+            .language()
+            .unwrap()
+            .id(),
+        "html"
+    );
+    buffer.place_cursor(&buffer.iter_at_line(1).unwrap());
+    response
+        .view
+        .activate_action("fold.collapse", None)
+        .unwrap();
+    assert!(buffer.iter_at_line(2).unwrap().has_tag(&tag));
+    response
+        .view
+        .activate_action("fold.expand-all", None)
+        .unwrap();
+    assert_eq!(editor::buffer_text(&response.view), formatted_html);
+    body.mode.set_selected(1);
+    body.json_editor.buffer().set_text(text);
+    response_panel
+        .first_child()
+        .unwrap()
+        .downcast::<Label>()
+        .unwrap()
+        .set_text("Response viewer — formatted HTML");
+    let main_loop = glib::MainLoop::new(None, false);
+    glib::timeout_add_local_once(std::time::Duration::from_millis(250), {
+        let main_loop = main_loop.clone();
+        move || main_loop.quit()
+    });
+    main_loop.run();
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(&snapshot, panels.width() as f64, panels.height() as f64);
+    window
+        .renderer()
+        .unwrap()
+        .render_texture(snapshot.to_node().unwrap(), None)
+        .save_to_png(std::env::temp_dir().join("pakpos-html-response.png"))
+        .unwrap();
+
     request_panel.remove(body_page);
     response_panel.remove(&response.root);
     window.destroy();
