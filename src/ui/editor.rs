@@ -416,6 +416,7 @@ fn build_request_source_editor(
         .right_margin(4)
         .build();
     set_accessible_label(&editor, accessible_label);
+    super::folding::install(&editor);
     autosave_on_blur(&editor, autosave);
     let scroll = scrolled(&editor);
     scroll.set_vexpand(true);
@@ -683,6 +684,7 @@ pub(super) fn build_source_viewer() -> SourceViewerWidgets {
         .left_margin(4)
         .right_margin(4)
         .build();
+    super::folding::install(&view);
 
     let search_settings = sourceview5::SearchSettings::builder()
         .wrap_around(true)
@@ -877,6 +879,9 @@ fn select_search_match_from(
     iter: &gtk::TextIter,
     forward: bool,
 ) -> bool {
+    // GtkSourceSearchContext skips invisible text. Reveal folds before searching
+    // so matches in collapsed sections remain reachable.
+    let _ = view.activate_action("fold.expand-all", None);
     let found = if forward {
         context.forward(iter)
     } else {

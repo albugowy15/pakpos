@@ -37,6 +37,250 @@ fn json_style_scheme_follows_the_gtk_theme() {
     assert_eq!(json_style_scheme_id(true, None), "Adwaita-dark");
 }
 
+fn assert_source_folding(view: &sourceview5::View, text: &str) {
+    let buffer = view.buffer();
+    buffer.set_text(text);
+    buffer.set_modified(false);
+    let header = buffer.iter_at_line(0).unwrap();
+    buffer.place_cursor(&header);
+    view.activate_action("fold.collapse", None).unwrap();
+    let tag = buffer.tag_table().lookup("pakpos-folded-lines").unwrap();
+    assert!(buffer.iter_at_line(1).unwrap().has_tag(&tag));
+    assert!(!buffer.start_iter().has_tag(&tag));
+    assert_eq!(editor::buffer_text(view), text);
+    assert!(!buffer.is_modified(), "folding modified the request");
+    view.activate_action("fold.expand", None).unwrap();
+    assert!(!buffer.iter_at_line(1).unwrap().has_tag(&tag));
+    view.activate_action("fold.collapse-all", None).unwrap();
+    assert!(buffer.iter_at_line(1).unwrap().has_tag(&tag));
+    view.activate_action("fold.expand-all", None).unwrap();
+    assert!(!buffer.iter_at_line(1).unwrap().has_tag(&tag));
+
+    // Moving into folded content reveals it for keyboard navigation/search.
+    view.activate_action("fold.collapse-all", None).unwrap();
+    buffer.place_cursor(&buffer.iter_at_line(1).unwrap());
+    assert!(!buffer.iter_at_line(1).unwrap().has_tag(&tag));
+
+    // Content replacement clears folds, including when switching requests.
+    buffer.place_cursor(&header);
+    view.activate_action("fold.collapse-all", None).unwrap();
+    buffer.set_text("replacement\nsource");
+    assert!(!buffer.iter_at_line(1).unwrap().has_tag(&tag));
+}
+
+fn assert_nested_folding_and_edits(view: &sourceview5::View) {
+    let buffer = view.buffer();
+    let text = "{\n  \"data\": [\n    {\n      \"value\": 1\n    }\n  ],\n  \"other\": true\n}";
+    buffer.set_text(text);
+    let tag = buffer.tag_table().lookup("pakpos-folded-lines").unwrap();
+    buffer.place_cursor(&buffer.iter_at_line(1).unwrap());
+    view.activate_action("fold.collapse", None).unwrap();
+    assert!(buffer.iter_at_line(2).unwrap().has_tag(&tag));
+    assert!(!buffer.iter_at_line(6).unwrap().has_tag(&tag));
+    buffer.place_cursor(&buffer.start_iter());
+    view.activate_action("fold.collapse", None).unwrap();
+    view.activate_action("fold.expand", None).unwrap();
+    assert!(
+        buffer.iter_at_line(2).unwrap().has_tag(&tag),
+        "nested fold was lost"
+    );
+    assert!(!buffer.iter_at_line(6).unwrap().has_tag(&tag));
+
+    buffer.set_modified(false);
+    buffer.insert(&mut buffer.start_iter(), " ");
+    assert!(!buffer.iter_at_line(2).unwrap().has_tag(&tag));
+    assert_eq!(editor::buffer_text(view), format!(" {text}"));
+    assert!(buffer.is_modified());
+    buffer.undo();
+    assert_eq!(
+        editor::buffer_text(view),
+        text,
+        "folding changed undo history"
+    );
+    buffer.place_cursor(&buffer.start_iter());
+    view.activate_action("fold.collapse-all", None).unwrap();
+    buffer.delete(&mut buffer.start_iter(), &mut buffer.iter_at_offset(1));
+    assert!(!buffer.iter_at_line(1).unwrap().has_tag(&tag));
+    assert_eq!(editor::buffer_text(view), &text[1..]);
+
+    // Backspace after a collapsed section removes only its final newline.
+    buffer.set_text(text);
+    buffer.place_cursor(&buffer.iter_at_line(1).unwrap());
+    view.activate_action("fold.collapse", None).unwrap();
+    buffer.place_cursor(&buffer.iter_at_line(6).unwrap());
+    view.emit_by_name::<()>("backspace", &[]);
+    assert_eq!(editor::buffer_text(view), text.replace("],\n", "],"));
+
+    // Delete at a folded header removes only the newline after that header.
+    buffer.set_text(text);
+    let mut header_end = buffer.iter_at_line(1).unwrap();
+    header_end.forward_to_line_end();
+    buffer.place_cursor(&header_end);
+    view.activate_action("fold.collapse", None).unwrap();
+    view.emit_by_name::<()>("delete-from-cursor", &[&gtk::DeleteType::Chars, &1i32]);
+    assert_eq!(editor::buffer_text(view), text.replace("[\n", "["));
+}
+
+fn assert_rendered_folding(
+    body_page: &GtkBox,
+    body: &editor::BodyWidgets,
+    response: &editor::SourceViewerWidgets,
+) {
+    let text = "{\n  \"user\": {\n    \"name\": \"Pakpos\",\n    \"roles\": [\n      \"reader\",\n      \"editor\"\n    ]\n  },\n  \"active\": true\n}";
+    body.mode.set_selected(1);
+    body.json_editor.buffer().set_text(text);
+    response.view.buffer().set_text(text);
+    response
+        .view
+        .buffer()
+        .place_cursor(&response.view.buffer().iter_at_line(1).unwrap());
+    response
+        .view
+        .activate_action("fold.collapse", None)
+        .unwrap();
+    let request_panel = GtkBox::new(Orientation::Vertical, 8);
+    request_panel.append(&Label::new(Some("Request editor — expanded")));
+    request_panel.append(body_page);
+    let response_panel = GtkBox::new(Orientation::Vertical, 8);
+    response_panel.append(&Label::new(Some("Response viewer — collapsed")));
+    response_panel.append(&response.root);
+    let panels = GtkBox::new(Orientation::Horizontal, 16);
+    panels.set_homogeneous(true);
+    panels.set_margin_top(16);
+    panels.set_margin_bottom(16);
+    panels.set_margin_start(16);
+    panels.set_margin_end(16);
+    panels.append(&request_panel);
+    panels.append(&response_panel);
+    let window = gtk::Window::builder()
+        .title("Pakpos source folding verification")
+        .default_width(900)
+        .default_height(360)
+        .child(&panels)
+        .build();
+    let paintable = gtk::WidgetPaintable::new(Some(&panels));
+    window.present();
+    let main_loop = glib::MainLoop::new(None, false);
+    glib::timeout_add_local_once(std::time::Duration::from_millis(250), {
+        let main_loop = main_loop.clone();
+        move || main_loop.quit()
+    });
+    main_loop.run();
+
+    // Capture only the verification widgets, without desktop or request data.
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(&snapshot, panels.width() as f64, panels.height() as f64);
+    let node = snapshot.to_node().expect("folding window should render");
+    window
+        .renderer()
+        .unwrap()
+        .render_texture(&node, None)
+        .save_to_png(std::env::temp_dir().join("pakpos-source-folding.png"))
+        .unwrap();
+
+    let gutter = sourceview5::prelude::ViewExt::gutter(&response.view, gtk::TextWindowType::Left);
+    let mut child = gutter.first_child();
+    let renderer = loop {
+        let widget = child.expect("folding gutter should be installed");
+        if widget.widget_name() == "pakpos-folding-gutter" {
+            break widget
+                .downcast::<sourceview5::GutterRendererText>()
+                .unwrap();
+        }
+        child = widget.next_sibling();
+    };
+    let buffer = response.view.buffer();
+    let header = buffer.iter_at_line(1).unwrap();
+    let area = gtk::gdk::Rectangle::new(0, 0, 20, 20);
+    assert!(renderer.query_activatable(&header, &area));
+    assert!(!renderer.query_activatable(&buffer.iter_at_line(8).unwrap(), &area));
+    let tag = buffer.tag_table().lookup("pakpos-folded-lines").unwrap();
+    renderer.emit_by_name::<()>(
+        "activate",
+        &[
+            &header,
+            &area,
+            &1u32,
+            &gtk::gdk::ModifierType::empty(),
+            &1i32,
+        ],
+    );
+    assert!(!buffer.iter_at_line(2).unwrap().has_tag(&tag));
+    renderer.emit_by_name::<()>(
+        "activate",
+        &[
+            &header,
+            &area,
+            &1u32,
+            &gtk::gdk::ModifierType::empty(),
+            &1i32,
+        ],
+    );
+    assert!(buffer.iter_at_line(2).unwrap().has_tag(&tag));
+
+    // Folding large content changes scrollbar ranges while the view is mapped.
+    // Exercise those transitions across frames, with both scrollbars needed.
+    let item = format!("    {{\"value\": \"{}\"}}", "x".repeat(300));
+    let large = format!(
+        "{{\n  \"items\": [\n{}\n  ]\n}}",
+        vec![item; 300].join(",\n")
+    );
+    body.json_editor.buffer().set_text(&large);
+    buffer.set_text(&large);
+    for view in [&body.json_editor, &response.view] {
+        view.buffer().place_cursor(&view.buffer().start_iter());
+    }
+    let mut gutter_widths = None;
+    for action in [
+        "fold.expand-all",
+        "fold.collapse-all",
+        "fold.expand-all",
+        "fold.collapse-all",
+        "fold.expand-all",
+    ] {
+        for view in [&body.json_editor, &response.view] {
+            if action == "fold.collapse-all" {
+                let mut end = view.buffer().end_iter();
+                view.scroll_to_iter(&mut end, 0.0, true, 1.0, 1.0);
+                view.buffer().place_cursor(&end);
+            }
+            view.activate_action(action, None).unwrap();
+        }
+        let main_loop = glib::MainLoop::new(None, false);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(200), {
+            let main_loop = main_loop.clone();
+            move || main_loop.quit()
+        });
+        main_loop.run();
+        let widths: Vec<_> = [&body.json_editor, &response.view]
+            .into_iter()
+            .map(|view| {
+                sourceview5::prelude::ViewExt::gutter(view, gtk::TextWindowType::Left).width()
+            })
+            .collect();
+        if let Some(previous) = &gutter_widths {
+            assert_eq!(&widths, previous, "folding changed the gutter allocation");
+        } else {
+            gutter_widths = Some(widths);
+        }
+        for view in [&body.json_editor, &response.view] {
+            let scroll = view
+                .ancestor(gtk::ScrolledWindow::static_type())
+                .unwrap()
+                .downcast::<gtk::ScrolledWindow>()
+                .unwrap();
+            let horizontal = scroll.hadjustment();
+            let vertical = scroll.vadjustment();
+            horizontal.set_value(horizontal.upper() - horizontal.page_size());
+            vertical.set_value(vertical.upper() - vertical.page_size());
+        }
+    }
+
+    request_panel.remove(body_page);
+    response_panel.remove(&response.root);
+    window.destroy();
+}
+
 /// Kept separate from the headless default suite. Run on a GTK display with:
 /// cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1
 #[test]
@@ -218,6 +462,33 @@ fn widget_lifetimes() {
         xml_buffer.style_scheme().as_ref().map(|scheme| scheme.id()),
         Some(expected_scheme.into())
     );
+    assert_source_folding(&editor.body.json_editor, "{\n  \"name\": \"Pakpos\"\n}");
+    assert_source_folding(
+        &editor.body.xml_editor,
+        "<root>\n  <name>Pakpos</name>\n</root>",
+    );
+    assert_source_folding(&editor.body.text_editor, "root\n  child\n  value");
+    assert_nested_folding_and_edits(&editor.body.json_editor);
+    set_source_content_type(&response_body.view, Some("application/json"));
+    assert_source_folding(&response_body.view, "{\n  \"name\": \"Pakpos\"\n}");
+    response_buffer.set_text("{\n  \"name\": \"hidden match\"\n}");
+    response_buffer.place_cursor(&response_buffer.start_iter());
+    response_body
+        .view
+        .activate_action("fold.collapse-all", None)
+        .unwrap();
+    response_body.search_entry.set_text("hidden match");
+    response_body
+        .search_entry
+        .emit_by_name::<()>("search-changed", &[]);
+    let tag = response_buffer
+        .tag_table()
+        .lookup("pakpos-folded-lines")
+        .unwrap();
+    assert!(!response_buffer.iter_at_line(1).unwrap().has_tag(&tag));
+    assert!(response_buffer.selection_bounds().is_some());
+    response_body.reset_search();
+    assert_rendered_folding(&body_page, &editor.body, &response_body);
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&sidebar.root);
     root.append(&editor.headers_box);
