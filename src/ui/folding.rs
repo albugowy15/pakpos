@@ -212,6 +212,14 @@ struct Folding {
     refresh: RefCell<Option<glib::SourceId>>,
 }
 
+impl Drop for Folding {
+    fn drop(&mut self) {
+        if let Some(refresh) = self.refresh.get_mut().take() {
+            refresh.remove();
+        }
+    }
+}
+
 impl Folding {
     fn ensure_regions(&self) {
         if !self.dirty.replace(false) {
@@ -421,8 +429,9 @@ pub(super) fn install(view: &sourceview5::View) {
         dirty: Cell::new(true),
         refresh: RefCell::default(),
     });
-    renderer.connect_query_data({
-        let folding = folding.clone();
+    renderer.connect_query_data(glib::clone!(
+        #[weak]
+        folding,
         move |renderer, _, line| {
             let is_region = folding
                 .regions
@@ -442,9 +451,12 @@ pub(super) fn install(view: &sourceview5::View) {
                 "▾"
             });
         }
-    });
-    renderer.connect_query_activatable({
-        let folding = folding.clone();
+    ));
+    renderer.connect_query_activatable(glib::clone!(
+        #[weak]
+        folding,
+        #[upgrade_or]
+        false,
         move |_, iter, _| {
             !iter.has_tag(&folding.tag)
                 && folding
@@ -453,23 +465,25 @@ pub(super) fn install(view: &sourceview5::View) {
                     .binary_search_by_key(&iter.line(), |r| r.start)
                     .is_ok()
         }
-    });
-    renderer.connect_activate({
-        let folding = folding.clone();
+    ));
+    renderer.connect_activate(glib::clone!(
+        #[weak]
+        folding,
         move |_, iter, _, button, _, presses| {
             if button == 1 && presses == 1 {
                 folding.toggle(iter.line());
             }
         }
-    });
+    ));
     gutter.insert(&renderer, -20);
     gutter.insert(&line_numbers, -31);
     // Keep one line-number column for both states. Swapping renderers on every
     // fold changed the gutter width and invalidated scrollbar allocations.
     // The native renderer also draws hidden lines over the next visible line.
     native_line_numbers.set_visible(false);
-    line_numbers.connect_query_data({
-        let folding = folding.clone();
+    line_numbers.connect_query_data(glib::clone!(
+        #[weak]
+        folding,
         move |numbers, _, line| {
             let hidden = folding
                 .buffer
@@ -485,17 +499,16 @@ pub(super) fn install(view: &sourceview5::View) {
                 .as_str(),
             );
         }
-    });
-    line_numbers.connect_query_activatable({
-        let native = native_line_numbers.downgrade();
-        let tag = folding.tag.clone();
-        move |_, iter, area| {
-            !iter.has_tag(&tag)
-                && native
-                    .upgrade()
-                    .is_some_and(|numbers| numbers.query_activatable(iter, area))
-        }
-    });
+    ));
+    line_numbers.connect_query_activatable(glib::clone!(
+        #[weak(rename_to = native)]
+        native_line_numbers,
+        #[weak(rename_to = tag)]
+        folding.tag,
+        #[upgrade_or]
+        false,
+        move |_, iter, area| !iter.has_tag(&tag) && native.query_activatable(iter, area)
+    ));
     line_numbers.connect_activate({
         let native = native_line_numbers.downgrade();
         move |_, iter, area, button, modifiers, presses| {
@@ -517,50 +530,57 @@ pub(super) fn install(view: &sourceview5::View) {
     };
     resize_numbers(&buffer);
     buffer.connect_changed(resize_numbers);
+    // The buffer owns the folding state; Folding only holds weak buffer/view refs.
     buffer.connect_changed({
         let folding = folding.clone();
         move |_| folding.invalidate()
     });
-    buffer.connect_language_notify({
-        let folding = folding.clone();
+    buffer.connect_language_notify(glib::clone!(
+        #[weak]
+        folding,
         move |_| folding.invalidate()
-    });
+    ));
     // Reveal before GTK calculates a keyboard deletion range. Revealing only
     // in delete-range is too late: that range may already span hidden lines.
-    view.connect_backspace({
-        let folding = folding.clone();
+    view.connect_backspace(glib::clone!(
+        #[weak]
+        folding,
         move |view| {
             if view.is_editable() {
                 folding.expand_all();
             }
         }
-    });
-    view.connect_delete_from_cursor({
-        let folding = folding.clone();
+    ));
+    view.connect_delete_from_cursor(glib::clone!(
+        #[weak]
+        folding,
         move |view, _, _| {
             if view.is_editable() {
                 folding.expand_all();
             }
         }
-    });
+    ));
     // Programmatic edits also discard hidden ranges before changing the text.
-    buffer.connect_insert_text({
-        let folding = folding.clone();
+    buffer.connect_insert_text(glib::clone!(
+        #[weak]
+        folding,
         move |_, _, _| folding.expand_all()
-    });
-    buffer.connect_delete_range({
-        let folding = folding.clone();
+    ));
+    buffer.connect_delete_range(glib::clone!(
+        #[weak]
+        folding,
         move |_, _, _| folding.expand_all()
-    });
+    ));
     // Search and programmatic navigation move marks into hidden text.
-    buffer.connect_mark_set({
-        let folding = folding.clone();
+    buffer.connect_mark_set(glib::clone!(
+        #[weak]
+        folding,
         move |_, iter, mark| {
             if matches!(mark.name().as_deref(), Some("insert" | "selection_bound")) {
                 folding.reveal(iter.line());
             }
         }
-    });
+    ));
 
     let actions = gio::SimpleActionGroup::new();
     let shortcuts = gtk::ShortcutController::new();
@@ -572,15 +592,16 @@ pub(super) fn install(view: &sourceview5::View) {
         ("expand-all", "Expand all", "<Control><Alt><Shift>Right"),
     ] {
         let action = gio::SimpleAction::new(name, None);
-        action.connect_activate({
-            let folding = folding.clone();
+        action.connect_activate(glib::clone!(
+            #[weak]
+            folding,
             move |_, _| match name {
                 "collapse" => folding.at_cursor(true),
                 "expand" => folding.at_cursor(false),
                 "collapse-all" => folding.collapse_all(),
                 _ => folding.expand_all(),
             }
-        });
+        ));
         actions.add_action(&action);
         let detailed = format!("fold.{name}");
         menu.append(Some(label), Some(&detailed));

@@ -111,7 +111,39 @@ impl Deref for RequestState {
     }
 }
 
-fn install_styles(display: &gtk::gdk::Display) {
+/// The display owns registered providers until they are explicitly removed.
+struct InstalledStyles {
+    display: glib::WeakRef<gtk::gdk::Display>,
+    provider: gtk::CssProvider,
+}
+
+impl Drop for InstalledStyles {
+    fn drop(&mut self) {
+        if let Some(display) = self.display.upgrade() {
+            gtk::style_context_remove_provider_for_display(&display, &self.provider);
+        }
+    }
+}
+
+/// One deliberate strong owner; signal handlers only borrow through weak refs.
+struct WindowResources {
+    state: Rc<RequestState>,
+    sidebar: SidebarWidgets,
+    editor: editor::EditorWidgets,
+    _toast: Toast,
+    _styles: InstalledStyles,
+    autosave_poll: RefCell<Option<glib::SourceId>>,
+}
+
+impl Drop for WindowResources {
+    fn drop(&mut self) {
+        if let Some(poll) = self.autosave_poll.get_mut().take() {
+            poll.remove();
+        }
+    }
+}
+
+fn install_styles(display: &gtk::gdk::Display) -> InstalledStyles {
     let styles = gtk::CssProvider::new();
     styles.load_from_data(
         "
@@ -134,9 +166,25 @@ fn install_styles(display: &gtk::gdk::Display) {
         &styles,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    InstalledStyles {
+        display: display.downgrade(),
+        provider: styles,
+    }
 }
 
 pub fn build(application: &Application) {
+    let (window, resources) = build_window(application);
+    sidebar::refresh_collection_choices(
+        &resources.state,
+        &resources.sidebar,
+        &resources.editor,
+        &resources.sidebar.status,
+    );
+    window.present();
+    resources.editor.url.grab_focus();
+}
+
+fn build_window(application: &Application) -> (ApplicationWindow, Rc<WindowResources>) {
     sourceview5::init();
     let autosave = AutosaveTrigger::default();
     let window = ApplicationWindow::builder()
@@ -145,7 +193,7 @@ pub fn build(application: &Application) {
         .default_width(1000)
         .default_height(700)
         .build();
-    install_styles(&gtk::prelude::WidgetExt::display(&window));
+    let styles = install_styles(&gtk::prelude::WidgetExt::display(&window));
 
     let header_bar = HeaderBar::builder().build();
     window.set_titlebar(Some(&header_bar));
@@ -271,12 +319,17 @@ pub fn build(application: &Application) {
             }
         }
     });
-    layout_toggle.connect_toggled({
-        let main = main.clone();
-        let request_panel = request_panel.clone();
-        let response_panel = response_panel.clone();
-        let json_editor = body.json_editor.downgrade();
-        let xml_editor = body.xml_editor.downgrade();
+    layout_toggle.connect_toggled(glib::clone!(
+        #[weak]
+        main,
+        #[weak]
+        request_panel,
+        #[weak]
+        response_panel,
+        #[weak(rename_to = json_editor)]
+        body.json_editor,
+        #[weak(rename_to = xml_editor)]
+        body.xml_editor,
         move |toggle| {
             let side_by_side = toggle.is_active();
             let orientation = if side_by_side {
@@ -299,14 +352,10 @@ pub fn build(application: &Application) {
             if available > 0 {
                 main.set_position(available / 2);
             }
-            if let Some(json_editor) = json_editor.upgrade() {
-                json_editor.queue_draw();
-            }
-            if let Some(xml_editor) = xml_editor.upgrade() {
-                xml_editor.queue_draw();
-            }
+            json_editor.queue_draw();
+            xml_editor.queue_draw();
         }
-    });
+    ));
 
     let response_metadata = Label::builder()
         .accessible_role(gtk::AccessibleRole::Status)
@@ -348,7 +397,26 @@ pub fn build(application: &Application) {
             headers: response_headers,
         },
     });
-    setup_collection_actions(
+    let resources = Rc::new(WindowResources {
+        state: state.clone(),
+        sidebar: sidebar.clone(),
+        editor: editor_widgets.clone(),
+        _toast: toast.clone(),
+        _styles: styles,
+        autosave_poll: RefCell::default(),
+    });
+    window.connect_destroy({
+        // This signal runs during GObject disposal. The window deliberately
+        // owns its state; state and child callbacks only hold weak backrefs.
+        let resources = RefCell::new(Some(resources.clone()));
+        move |_| {
+            if let Some(resources) = resources.borrow_mut().take() {
+                resources.sidebar.autosave.borrow_mut().take();
+                cancel_active_request(&resources.state);
+            }
+        }
+    });
+    let autosave_poll = setup_collection_actions(
         application,
         &window,
         &sidebar,
@@ -356,24 +424,22 @@ pub fn build(application: &Application) {
         &state,
         &sidebar.status,
     );
+    resources.autosave_poll.replace(Some(autosave_poll));
     setup_postman_actions(&window, &sidebar, &editor_widgets, &state);
-    let send_request: Rc<dyn Fn()> = Rc::new({
-        let editor = Rc::downgrade(&editor_widgets);
-        let sidebar = Rc::downgrade(&sidebar);
-        let send_group = send_group.downgrade();
-        let cancel = cancel.downgrade();
-        let toast = toast.clone();
-        let state = state.clone();
-
+    let send_request: Rc<dyn Fn()> = Rc::new(glib::clone!(
+        #[weak(rename_to = editor)]
+        editor_widgets,
+        #[weak]
+        sidebar,
+        #[weak]
+        send_group,
+        #[weak]
+        cancel,
+        #[weak]
+        toast,
+        #[weak]
+        state,
         move || {
-            let (Some(editor), Some(sidebar), Some(send_group), Some(cancel)) = (
-                editor.upgrade(),
-                sidebar.upgrade(),
-                send_group.upgrade(),
-                cancel.upgrade(),
-            ) else {
-                return;
-            };
             if state.active_request_id.get().is_some() {
                 return;
             }
@@ -411,61 +477,78 @@ pub fn build(application: &Application) {
             set_request_running(&send_group, &cancel, true);
             editor.response.clear();
 
-            let state = state.clone();
-            let send_group = send_group.clone();
-            let cancel = cancel.clone();
-            let toast = toast.clone();
-            let response = editor.response.clone();
-            let effects = state.effects.clone();
-            effects.run(effect, move |output| {
-                let EffectOutput::RequestExecuted {
-                    id,
-                    result,
-                    response_storage_error,
-                } = output
-                else {
-                    return;
-                };
-                if state.update(Action::RequestCompleted { id }).accepted {
-                    set_request_running(&send_group, &cancel, false);
-                    let is_selected = state
-                        .collection
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|session| session.active_request() == Some(request_id));
-                    display_result(result, is_selected, &toast, &response);
-                    if let Some(error) = response_storage_error {
-                        toast.error(&format!("Could not save the response: {error}"));
+            state.effects.run(
+                effect,
+                glib::clone!(
+                    #[weak]
+                    state,
+                    #[weak]
+                    send_group,
+                    #[weak]
+                    cancel,
+                    #[weak]
+                    toast,
+                    #[weak]
+                    editor,
+                    move |output| {
+                        let EffectOutput::RequestExecuted {
+                            id,
+                            result,
+                            response_storage_error,
+                        } = output
+                        else {
+                            return;
+                        };
+                        if state.update(Action::RequestCompleted { id }).accepted {
+                            set_request_running(&send_group, &cancel, false);
+                            let is_selected =
+                                state.collection.borrow().as_ref().is_some_and(|session| {
+                                    session.active_request() == Some(request_id)
+                                });
+                            display_result(result, is_selected, &toast, &editor.response);
+                            if let Some(error) = response_storage_error {
+                                toast.error(&format!("Could not save the response: {error}"));
+                            }
+                        }
                     }
-                }
-            });
+                ),
+            );
         }
-    });
+    ));
 
     send.connect_clicked({
         let send_request = send_request.clone();
         move |_| send_request()
     });
-    cancel.connect_clicked({
-        let state = state.clone();
+    cancel.connect_clicked(glib::clone!(
+        #[weak]
+        state,
         move |_| {
             if let Some(effect) = state.update(Action::CancelRequest).effect {
                 state.effects.run(effect, |_| {});
             }
         }
-    });
+    ));
 
     let copy_curl_action = gio::SimpleAction::new("copy-curl", None);
-    copy_curl_action.connect_activate({
-        let method = method.clone();
-        let url = url.clone();
-        let header_rows = header_rows.clone();
-        let body = body.clone();
-        let state = state.clone();
-        let toast = toast.clone();
-        let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
+    let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
+    copy_curl_action.connect_activate(glib::clone!(
+        #[weak(rename_to = editor)]
+        editor_widgets,
+        #[weak]
+        state,
+        #[weak]
+        toast,
+        #[weak]
+        clipboard,
         move |_, _| {
-            let result = collect_request(&method, &url, &header_rows, &body).and_then(|request| {
+            let result = collect_request(
+                &editor.method,
+                &editor.url,
+                &editor.header_rows,
+                &editor.body,
+            )
+            .and_then(|request| {
                 let AppEvent::CurlExported(result) =
                     state.update(Action::ExportCurl(request.into())).event
                 else {
@@ -481,64 +564,72 @@ pub fn build(application: &Application) {
                 Err(error) => toast.error(&error),
             }
         }
-    });
+    ));
     window.add_action(&copy_curl_action);
 
     let paste_curl_action = gio::SimpleAction::new("paste-curl", None);
-    paste_curl_action.connect_activate({
-        let sidebar = Rc::downgrade(&sidebar);
-        let editor = Rc::downgrade(&editor_widgets);
-        let state = state.clone();
-        let toast = toast.clone();
-        let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
+    paste_curl_action.connect_activate(glib::clone!(
+        #[weak]
+        sidebar,
+        #[weak(rename_to = editor)]
+        editor_widgets,
+        #[weak]
+        state,
+        #[weak]
+        toast,
+        #[weak]
+        clipboard,
         move |_, _| {
-            clipboard.read_text_async(None::<&gio::Cancellable>, {
-                let sidebar = sidebar.clone();
-                let editor = editor.clone();
-                let state = state.clone();
-                let toast = toast.clone();
-                move |result| {
-                    let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade())
-                    else {
-                        return;
-                    };
-                    match result {
-                        Ok(Some(text)) => {
-                            capture_active_request(&state, &sidebar, &editor);
-                            match state.update(Action::ImportCurl(text.to_string())).event {
-                                AppEvent::CurlImported(Ok(import)) => {
-                                    apply_loaded_request(
-                                        import.request_id,
-                                        &state,
-                                        &sidebar,
-                                        &editor,
-                                    );
-                                    editor.response.clear();
-                                    render_request_buttons(&state, &sidebar, &editor);
-                                    request_autosave(&sidebar.autosave);
-                                    let message = if import.warnings.is_empty() {
-                                        "Created a request from cURL.".to_owned()
-                                    } else {
-                                        format!(
-                                            "Created a request from cURL. {}",
-                                            import.warnings.join(" ")
-                                        )
-                                    };
-                                    toast.message(&message);
+            clipboard.read_text_async(
+                None::<&gio::Cancellable>,
+                glib::clone!(
+                    #[weak]
+                    sidebar,
+                    #[weak]
+                    editor,
+                    #[weak]
+                    state,
+                    #[weak]
+                    toast,
+                    move |result| {
+                        match result {
+                            Ok(Some(text)) => {
+                                capture_active_request(&state, &sidebar, &editor);
+                                match state.update(Action::ImportCurl(text.to_string())).event {
+                                    AppEvent::CurlImported(Ok(import)) => {
+                                        apply_loaded_request(
+                                            import.request_id,
+                                            &state,
+                                            &sidebar,
+                                            &editor,
+                                        );
+                                        editor.response.clear();
+                                        render_request_buttons(&state, &sidebar, &editor);
+                                        request_autosave(&sidebar.autosave);
+                                        let message = if import.warnings.is_empty() {
+                                            "Created a request from cURL.".to_owned()
+                                        } else {
+                                            format!(
+                                                "Created a request from cURL. {}",
+                                                import.warnings.join(" ")
+                                            )
+                                        };
+                                        toast.message(&message);
+                                    }
+                                    AppEvent::CurlImported(Err(error)) => toast.error(&error),
+                                    _ => toast.error("Could not import the cURL request."),
                                 }
-                                AppEvent::CurlImported(Err(error)) => toast.error(&error),
-                                _ => toast.error("Could not import the cURL request."),
+                            }
+                            Ok(None) => toast.error("The clipboard has no text."),
+                            Err(error) => {
+                                toast.error(&format!("Could not read the clipboard: {error}"))
                             }
                         }
-                        Ok(None) => toast.error("The clipboard has no text."),
-                        Err(error) => {
-                            toast.error(&format!("Could not read the clipboard: {error}"))
-                        }
                     }
-                }
-            });
+                ),
+            );
         }
-    });
+    ));
     window.add_action(&paste_curl_action);
 
     let send_action = gio::SimpleAction::new("send", None);
@@ -546,32 +637,37 @@ pub fn build(application: &Application) {
     window.add_action(&send_action);
     application.set_accels_for_action("win.send", &["<Control>Return"]);
 
-    window.connect_close_request({
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor_widgets.clone();
-        let collection_status = sidebar.status.clone();
+    window.connect_close_request(glib::clone!(
+        #[weak]
+        resources,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
         move |window| {
+            let WindowResources {
+                state,
+                sidebar,
+                editor,
+                ..
+            } = resources.as_ref();
             if state.allow_close.get() {
-                cancel_active_request(&state);
+                cancel_active_request(state);
                 return glib::Propagation::Proceed;
             }
-            capture_active_request(&state, &sidebar, &editor);
-            let has_dirty_collection = collection_is_dirty(&state);
+            capture_active_request(state, sidebar, editor);
+            let has_dirty_collection = collection_is_dirty(state);
             if !has_dirty_collection {
-                cancel_active_request(&state);
+                cancel_active_request(state);
                 return glib::Propagation::Proceed;
             }
             state.update(Action::CloseRequested);
             if !state.collection_busy.get() {
-                autosave_current_collection(&state, &sidebar, &editor, &collection_status, window);
+                autosave_current_collection(state, sidebar, editor, &sidebar.status, window);
             }
             glib::Propagation::Stop
         }
-    });
+    ));
 
-    window.present();
-    url.grab_focus();
+    (window, resources)
 }
 
 fn setup_postman_actions(
@@ -581,66 +677,67 @@ fn setup_postman_actions(
     state: &Rc<RequestState>,
 ) {
     let import_action = gio::SimpleAction::new("import-postman", None);
-    import_action.connect_activate({
-        let window = window.downgrade();
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
+    import_action.connect_activate(glib::clone!(
+        #[weak]
+        window,
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
         move |_, _| {
-            let (Some(window), Some(sidebar), Some(editor)) =
-                (window.upgrade(), sidebar.upgrade(), editor.upgrade())
-            else {
-                return;
-            };
             let dialog = FileDialog::builder()
                 .title("Import Postman Collection")
                 .accept_label("Import")
                 .modal(true)
                 .build();
-            dialog.open(Some(&window), None::<&gio::Cancellable>, {
-                let window = window.downgrade();
-                let state = state.clone();
-                let sidebar = Rc::downgrade(&sidebar);
-                let editor = Rc::downgrade(&editor);
-                move |result| {
-                    let (Ok(file), Some(window), Some(sidebar), Some(editor)) = (
-                        result,
-                        window.upgrade(),
-                        sidebar.upgrade(),
-                        editor.upgrade(),
-                    ) else {
-                        return;
-                    };
-                    let Some(path) = file.path() else {
-                        show_error(&sidebar.status, "Select a local Postman collection file.");
-                        return;
-                    };
-                    flow::continue_after_autosave(
-                        &window,
-                        &state,
-                        &sidebar,
-                        &editor,
-                        &sidebar.status,
-                        DeferredAction::ImportPostman(path),
-                    );
-                }
-            });
+            dialog.open(
+                Some(&window),
+                None::<&gio::Cancellable>,
+                glib::clone!(
+                    #[weak]
+                    window,
+                    #[weak]
+                    state,
+                    #[weak]
+                    sidebar,
+                    #[weak]
+                    editor,
+                    move |result| {
+                        let Ok(file) = result else {
+                            return;
+                        };
+                        let Some(path) = file.path() else {
+                            show_error(&sidebar.status, "Select a local Postman collection file.");
+                            return;
+                        };
+                        flow::continue_after_autosave(
+                            &window,
+                            &state,
+                            &sidebar,
+                            &editor,
+                            &sidebar.status,
+                            DeferredAction::ImportPostman(path),
+                        );
+                    }
+                ),
+            );
         }
-    });
+    ));
     window.add_action(&import_action);
 
     let export_action = gio::SimpleAction::new("export-postman", None);
-    export_action.connect_activate({
-        let window = window.downgrade();
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
+    export_action.connect_activate(glib::clone!(
+        #[weak]
+        window,
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
         move |_, _| {
-            let (Some(window), Some(sidebar), Some(editor)) =
-                (window.upgrade(), sidebar.upgrade(), editor.upgrade())
-            else {
-                return;
-            };
             let Some(collection_name) = state
                 .collection
                 .borrow()
@@ -656,36 +753,39 @@ fn setup_postman_actions(
                 .initial_name(format!("{collection_name}.postman_collection.json"))
                 .modal(true)
                 .build();
-            dialog.save(Some(&window), None::<&gio::Cancellable>, {
-                let window = window.downgrade();
-                let state = state.clone();
-                let sidebar = Rc::downgrade(&sidebar);
-                let editor = Rc::downgrade(&editor);
-                move |result| {
-                    let (Ok(file), Some(window), Some(sidebar), Some(editor)) = (
-                        result,
-                        window.upgrade(),
-                        sidebar.upgrade(),
-                        editor.upgrade(),
-                    ) else {
-                        return;
-                    };
-                    let Some(path) = file.path() else {
-                        show_error(&sidebar.status, "Select a local export destination.");
-                        return;
-                    };
-                    flow::continue_after_autosave(
-                        &window,
-                        &state,
-                        &sidebar,
-                        &editor,
-                        &sidebar.status,
-                        DeferredAction::ExportPostman(path),
-                    );
-                }
-            });
+            dialog.save(
+                Some(&window),
+                None::<&gio::Cancellable>,
+                glib::clone!(
+                    #[weak]
+                    window,
+                    #[weak]
+                    state,
+                    #[weak]
+                    sidebar,
+                    #[weak]
+                    editor,
+                    move |result| {
+                        let Ok(file) = result else {
+                            return;
+                        };
+                        let Some(path) = file.path() else {
+                            show_error(&sidebar.status, "Select a local export destination.");
+                            return;
+                        };
+                        flow::continue_after_autosave(
+                            &window,
+                            &state,
+                            &sidebar,
+                            &editor,
+                            &sidebar.status,
+                            DeferredAction::ExportPostman(path),
+                        );
+                    }
+                ),
+            );
         }
-    });
+    ));
     window.add_action(&export_action);
 }
 

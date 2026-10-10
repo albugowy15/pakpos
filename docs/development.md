@@ -81,6 +81,38 @@ until saved. Allocation regression coverage checks bookkeeping, validation, cURL
 export, and plain response display with a 2 MiB payload. See the
 [allocation audit](memory-allocation-audit.md) for measurements and remaining costs.
 
+## Dropdown presentation-timing warning
+
+On GTK 4.24.1 with the local Hyprland Wayland session, opening or closing a native
+dropdown can log:
+
+```text
+Gdk-WARNING: Duplicate call to gdk_frame_timings_presented() with different values
+```
+
+Verified on 2026-10-10 with a standalone GTK window containing only a header bar
+and a two-item `GtkDropDown`: activating the dropdown 20 times reproduced the
+warning without Pakpos's collection state, SQLite, HTTP, or editor callbacks.
+Making warnings fatal under GDB located the call in GTK, reached through Wayland
+event dispatch. The warning reports inconsistent timestamps for an already
+presented frame; it does not by itself establish a memory leak. See
+[GTK's frame-timing implementation](https://github.com/GNOME/gtk/blob/4.24.1/gdk/gdkframetimings.c)
+and the [upstream menu-warning report](https://discourse.gnome.org/t/how-to-avoid-duplicate-call-with-different-values/36355).
+
+The Cairo renderer completed the same 20 toggles without warnings. For a local
+workaround, launch the development build with:
+
+```sh
+GSK_RENDERER=cairo cargo run
+```
+
+For the release binary, use `GSK_RENDERER=cairo ./target/release/pakpos`; for an
+installed binary, use `GSK_RENDERER=cairo pakpos`. Cairo uses software rendering,
+which can be slower for large views. This launch option leaves other applications
+unaffected. See [GTK's renderer options](https://docs.gtk.org/gtk4/running.html#gsk_renderer).
+Selecting OpenGL or disabling `wp_presentation` did not remove the warning in the
+same local reproducer. Pakpos retains GTK's normal renderer selection by default.
+
 ## Verification
 
 Run the non-UI verification with:
@@ -91,7 +123,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-These checks pass with 87 headless unit tests, one allocation regression
+These checks pass with 116 headless unit tests, one allocation regression
 test, and three Postman interoperability tests. The interoperability suite imports a
 representative fixture, validates exports against a vendored copy of the official
 v2.1 schema, checks supported-field round trips, and sends original and round-tripped
@@ -104,6 +136,10 @@ cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1
 ```
 
 That test checks removed/replaced rows, closed menus, and no-op autosave flag
-consumption. It does not replace a full manual accessibility or responsiveness pass.
+consumption. The [memory audit](memory-allocation-audit.md#gobject-ownership-review-2026-10-10)
+also documents full-window ownership and collection-switch tests, and a native
+GTK text-selection retention reproducer. Run the GTK tests in separate processes
+because GTK initialization belongs to one test thread. These checks do not replace
+a full manual accessibility or responsiveness pass.
 Current release RSS scenarios, large-collection storage measurements, and manual
 import and execution in the Postman desktop application remain outstanding.

@@ -49,6 +49,7 @@ pub(super) fn show_create_collection_dialog(
 ) {
     let dialog = Window::builder()
         .transient_for(window)
+        .destroy_with_parent(true)
         .modal(true)
         .title("Create collection")
         .default_width(380)
@@ -86,33 +87,34 @@ pub(super) fn show_create_collection_dialog(
     dialog.set_child(Some(&content));
     dialog.set_default_widget(Some(&create));
 
-    name.connect_changed({
-        let create = create.downgrade();
+    name.connect_changed(glib::clone!(
+        #[weak]
+        create,
         move |name| {
-            if let Some(create) = create.upgrade() {
-                create.set_sensitive(!name.text().trim().is_empty());
-            }
+            create.set_sensitive(!name.text().trim().is_empty());
         }
-    });
-    cancel.connect_clicked({
-        let dialog = dialog.downgrade();
+    ));
+    cancel.connect_clicked(glib::clone!(
+        #[weak]
+        dialog,
         move |_| {
-            if let Some(dialog) = dialog.upgrade() {
-                dialog.close();
-            }
+            dialog.close();
         }
-    });
-    create.connect_clicked({
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let response_summary = response_summary.clone();
-        let dialog = dialog.downgrade();
-        let name = name.downgrade();
+    ));
+    create.connect_clicked(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        #[weak]
+        response_summary,
+        #[weak]
+        dialog,
+        #[weak]
+        name,
         move |_| {
-            let (Some(dialog), Some(name)) = (dialog.upgrade(), name.upgrade()) else {
-                return;
-            };
             let collection_name = name.text().trim().to_owned();
             if collection_name.is_empty() {
                 return;
@@ -124,39 +126,46 @@ pub(super) fn show_create_collection_dialog(
                 return;
             };
             show_message(&response_summary, "Creating collection…");
-            state.effects.run(effect, {
-                let state = state.clone();
-                let sidebar = sidebar.clone();
-                let editor = editor.clone();
-                let response_summary = response_summary.clone();
-                move |output| {
-                    let EffectOutput::CollectionCreated { collection, result } = output else {
-                        return;
-                    };
-                    state.update(Action::CollectionOperationCompleted);
-                    match result {
-                        Ok(()) => {
-                            state.update(Action::SetCollection(CollectionSession::empty(
-                                collection,
-                            )));
-                            sidebar.search.set_text("");
-                            sidebar.applied_search.replace(String::new());
-                            clear_request_editor(&sidebar, &editor);
-                            render_request_buttons(&state, &sidebar, &editor);
-                            show_message(&response_summary, "Created the collection.");
-                            refresh_collection_choices(
-                                &state,
-                                &sidebar,
-                                &editor,
-                                &response_summary,
-                            );
+            state.effects.run(
+                effect,
+                glib::clone!(
+                    #[weak]
+                    state,
+                    #[weak]
+                    sidebar,
+                    #[weak]
+                    editor,
+                    #[weak]
+                    response_summary,
+                    move |output| {
+                        let EffectOutput::CollectionCreated { collection, result } = output else {
+                            return;
+                        };
+                        state.update(Action::CollectionOperationCompleted);
+                        match result {
+                            Ok(()) => {
+                                state.update(Action::SetCollection(CollectionSession::empty(
+                                    collection,
+                                )));
+                                sidebar.search.set_text("");
+                                sidebar.applied_search.replace(String::new());
+                                clear_request_editor(&sidebar, &editor);
+                                render_request_buttons(&state, &sidebar, &editor);
+                                show_message(&response_summary, "Created the collection.");
+                                refresh_collection_choices(
+                                    &state,
+                                    &sidebar,
+                                    &editor,
+                                    &response_summary,
+                                );
+                            }
+                            Err(error) => show_error(&response_summary, &error),
                         }
-                        Err(error) => show_error(&response_summary, &error),
                     }
-                }
-            });
+                ),
+            );
         }
-    });
+    ));
     dialog.present();
     name.grab_focus();
 }
@@ -178,6 +187,7 @@ pub(super) fn show_rename_request_dialog(
     };
     let dialog = Window::builder()
         .transient_for(window)
+        .destroy_with_parent(true)
         .modal(true)
         .title("Rename request")
         .default_width(380)
@@ -209,19 +219,21 @@ pub(super) fn show_rename_request_dialog(
     content.append(&actions);
     dialog.set_child(Some(&content));
     dialog.set_default_widget(Some(&done));
-    name.connect_changed({
-        let done = done.clone();
+    name.connect_changed(glib::clone!(
+        #[weak]
+        done,
         move |name| done.set_sensitive(!name.text().trim().is_empty())
-    });
-    let commit_rename: Rc<dyn Fn()> = Rc::new({
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let name = name.downgrade();
+    ));
+    let commit_rename: Rc<dyn Fn()> = Rc::new(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        #[weak]
+        name,
         move || {
-            let Some(name) = name.upgrade() else {
-                return;
-            };
             let new_name = name.text().trim().to_owned();
             if new_name.is_empty() {
                 return;
@@ -237,15 +249,14 @@ pub(super) fn show_rename_request_dialog(
                 request_autosave(&sidebar.autosave);
             }
         }
-    });
-    cancel.connect_clicked({
-        let dialog = dialog.downgrade();
+    ));
+    cancel.connect_clicked(glib::clone!(
+        #[weak]
+        dialog,
         move |_| {
-            if let Some(dialog) = dialog.upgrade() {
-                dialog.close();
-            }
+            dialog.close();
         }
-    });
+    ));
     done.connect_clicked({
         let commit_rename = commit_rename.clone();
         let dialog = dialog.downgrade();
@@ -283,24 +294,35 @@ pub(super) fn confirm_delete_request(
         .cancel_button(0)
         .default_button(0)
         .build();
-    dialog.choose(Some(window), None::<&gio::Cancellable>, {
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let window = window.downgrade();
-        move |response| {
-            if response == Ok(1) {
-                remove_request(request_id, &state, &sidebar, &editor);
-                show_message(
-                    &sidebar.status,
-                    "Deleted the request. Saving automatically…",
-                );
-                glib::idle_add_local_once(move || {
-                    if let Some(window) = window.upgrade() {
-                        gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
-                    }
-                });
+    dialog.choose(
+        Some(window),
+        None::<&gio::Cancellable>,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            window,
+            move |response| {
+                if response == Ok(1) {
+                    remove_request(request_id, &state, &sidebar, &editor);
+                    show_message(
+                        &sidebar.status,
+                        "Deleted the request. Saving automatically…",
+                    );
+                    glib::idle_add_local_once(glib::clone!(
+                        #[weak]
+                        window,
+                        move || gtk::prelude::GtkWindowExt::set_focus(
+                            &window,
+                            None::<&gtk::Widget>
+                        )
+                    ));
+                }
             }
-        }
-    });
+        ),
+    );
 }

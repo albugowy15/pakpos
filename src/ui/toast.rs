@@ -1,11 +1,13 @@
 //! Transient in-window notification presentation.
 //!
 //! [`Toast`] overlays short request messages without blocking interaction. Each
-//! message receives a monotonically wrapping sequence number so an older timeout
-//! cannot hide a newer notification. Errors remain visible slightly longer and
+//! message replaces the previous timeout. Errors remain visible slightly longer and
 //! the close button always allows immediate dismissal.
 
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+};
 
 use gtk::{
     AccessibleRole, Align, Box as GtkBox, Button, Label, Orientation, Overlay, Revealer,
@@ -17,9 +19,39 @@ use super::set_accessible_label;
 
 #[derive(Clone)]
 pub(super) struct Toast {
+    handles: Rc<ToastHandles>,
+}
+
+struct ToastHandles {
     revealer: Revealer,
     label: Label,
-    sequence: Rc<Cell<u64>>,
+    timeout: RefCell<Option<glib::SourceId>>,
+}
+
+pub(super) struct WeakToast(Weak<ToastHandles>);
+
+impl glib::clone::Downgrade for Toast {
+    type Weak = WeakToast;
+
+    fn downgrade(&self) -> WeakToast {
+        WeakToast(Rc::downgrade(&self.handles))
+    }
+}
+
+impl glib::clone::Upgrade for WeakToast {
+    type Strong = Toast;
+
+    fn upgrade(&self) -> Option<Toast> {
+        self.0.upgrade().map(|handles| Toast { handles })
+    }
+}
+
+impl Drop for ToastHandles {
+    fn drop(&mut self) {
+        if let Some(timeout) = self.timeout.get_mut().take() {
+            timeout.remove();
+        }
+    }
 }
 
 impl Toast {
@@ -63,34 +95,41 @@ impl Toast {
             .build();
         overlay.add_overlay(&revealer);
 
-        close.connect_clicked({
-            let revealer = revealer.downgrade();
-            move |_| {
-                if let Some(revealer) = revealer.upgrade() {
-                    revealer.set_reveal_child(false);
-                }
-            }
+        let handles = Rc::new(ToastHandles {
+            revealer,
+            label,
+            timeout: RefCell::default(),
         });
+        close.connect_clicked(glib::clone!(
+            #[weak]
+            handles,
+            move |_| {
+                handles.cancel_timeout();
+                handles.revealer.set_reveal_child(false);
+            }
+        ));
 
-        (
-            overlay,
-            Self {
-                revealer,
-                label,
-                sequence: Rc::new(Cell::new(0)),
-            },
-        )
+        (overlay, Self { handles })
     }
 
     pub(super) fn message(&self, message: &str) {
-        self.show(message, false);
+        self.handles.show(message, false);
     }
 
     pub(super) fn error(&self, message: &str) {
-        self.show(message, true);
+        self.handles.show(message, true);
+    }
+}
+
+impl ToastHandles {
+    fn cancel_timeout(&self) {
+        if let Some(timeout) = self.timeout.borrow_mut().take() {
+            timeout.remove();
+        }
     }
 
-    fn show(&self, message: &str, error: bool) {
+    fn show(self: &Rc<Self>, message: &str, error: bool) {
+        self.cancel_timeout();
         self.label.set_text(message);
         if error {
             self.label.add_css_class("error");
@@ -99,22 +138,64 @@ impl Toast {
         }
         self.revealer.set_reveal_child(true);
 
-        let sequence = self.sequence.get().wrapping_add(1);
-        self.sequence.set(sequence);
-        let current_sequence = self.sequence.clone();
-        let revealer = self.revealer.downgrade();
         let duration = if error {
             ERROR_TOAST_DURATION_SECONDS
         } else {
             TOAST_DURATION_SECONDS
         };
-        glib::timeout_add_seconds_local_once(duration, move || {
-            // Ignore a timer belonging to a message that has since been replaced.
-            if current_sequence.get() == sequence
-                && let Some(revealer) = revealer.upgrade()
-            {
-                revealer.set_reveal_child(false);
-            }
-        });
+        *self.timeout.borrow_mut() = Some(glib::timeout_add_seconds_local_once(
+            duration,
+            glib::clone!(
+                #[weak(rename_to = handles)]
+                self,
+                move || {
+                    handles.timeout.borrow_mut().take();
+                    handles.revealer.set_reveal_child(false);
+                }
+            ),
+        ));
     }
+}
+
+#[cfg(test)]
+pub(super) fn assert_lifetimes() {
+    let (overlay, toast) = Toast::overlay(&GtkBox::new(Orientation::Vertical, 0));
+    let context = glib::MainContext::default();
+    let mut previous: Option<glib::Source> = None;
+    for _ in 0..100 {
+        toast.message("Notification");
+        if let Some(previous) = previous {
+            assert!(previous.is_destroyed());
+        }
+        previous = context.find_source_by_id(toast.handles.timeout.borrow().as_ref().unwrap());
+    }
+    let close = toast
+        .handles
+        .revealer
+        .child()
+        .unwrap()
+        .last_child()
+        .unwrap()
+        .downcast::<Button>()
+        .unwrap();
+    close.emit_clicked();
+    assert!(toast.handles.timeout.borrow().is_none());
+    assert!(!toast.handles.revealer.reveals_child());
+    assert!(previous.unwrap().is_destroyed());
+
+    toast.error("Error");
+    let timeout = context
+        .find_source_by_id(toast.handles.timeout.borrow().as_ref().unwrap())
+        .unwrap();
+    let weak = Rc::downgrade(&toast.handles);
+    let label = toast.handles.label.downgrade();
+    let revealer = toast.handles.revealer.downgrade();
+    drop(toast);
+    assert!(weak.upgrade().is_none());
+    assert!(timeout.is_destroyed());
+    // A retained child must not retain its former parent through its callback.
+    drop(overlay);
+    assert!(label.upgrade().is_none());
+    assert!(revealer.upgrade().is_none());
+    close.emit_clicked();
 }

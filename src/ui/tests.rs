@@ -14,6 +14,7 @@ use editor::{
 use pakpos::{app::CollectionSession, models::Request};
 use sidebar::{build_request_context_menu, render_request_buttons};
 use sourceview5::prelude::*;
+use std::sync::Arc;
 
 fn assert_has_accessible_label(widget: &impl IsA<gtk::Widget>) {
     assert!(
@@ -35,6 +36,401 @@ fn json_style_scheme_follows_the_gtk_theme() {
         "Adwaita-dark"
     );
     assert_eq!(json_style_scheme_id(true, None), "Adwaita-dark");
+}
+
+/// Exercises the production ownership graph without loading or writing storage.
+/// Run separately from other GTK tests because GTK belongs to one test thread.
+#[test]
+#[ignore = "requires a GTK display"]
+fn gobject_ownership() {
+    gtk::init().expect("GTK display required");
+    sourceview5::init();
+    toast::assert_lifetimes();
+    let application = Application::builder()
+        .application_id("io.github.pakpos.OwnershipTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    application.register(None::<&gio::Cancellable>).unwrap();
+    let context = glib::MainContext::default();
+    for _ in 0..10 {
+        let (window, resources) = build_window(&application);
+        window.present();
+        while context.pending() {
+            context.iteration(false);
+        }
+        let weak_resources = Rc::downgrade(&resources);
+        let weak_state = Rc::downgrade(&resources.state);
+        let weak_sidebar = Rc::downgrade(&resources.sidebar);
+        let weak_editor = Rc::downgrade(&resources.editor);
+        let weak_autosave = Rc::downgrade(&resources.sidebar.autosave);
+        let weak_styles = resources._styles.provider.downgrade();
+        let weak_request_view = resources.editor.body.json_editor.downgrade();
+        let weak_request_buffer = resources.editor.body.json_editor.buffer().downgrade();
+        let weak_response_view = resources.editor.response.body.view.downgrade();
+        let weak_response_buffer = resources.editor.response.body.view.buffer().downgrade();
+        let weak_search = resources.editor.response.body.search_context.downgrade();
+        let weak_toast = glib::clone::Downgrade::downgrade(&resources._toast);
+        let poll = context
+            .find_source_by_id(resources.autosave_poll.borrow().as_ref().unwrap())
+            .unwrap();
+        let copy_action = window.lookup_action("copy-curl").unwrap();
+        let paste_action = window.lookup_action("paste-curl").unwrap();
+        let send_action = window.lookup_action("send").unwrap();
+        let format_button = resources.editor.body.json_format.clone();
+
+        // Weak callbacks must still work while the window's owner is alive.
+        resources.editor.url.set_text("https://example.com");
+        resources.editor.body.mode.set_selected(1);
+        resources
+            .editor
+            .body
+            .json_editor
+            .buffer()
+            .set_text("{\"a\":1}");
+        // Prevent edits from starting storage effects in this lifetime test.
+        resources.state.collection_busy.set(true);
+        format_button.emit_clicked();
+        assert!(editor::buffer_text(&resources.editor.body.json_editor).contains('\n'));
+        resources
+            .editor
+            .response
+            .body
+            .view
+            .buffer()
+            .set_text("alpha beta alpha");
+        // Exercise the search context without selecting text: GTK 4.24.1's
+        // selection provider independently retains its buffer (see the audit).
+        let search = &resources.editor.response.body.search_context;
+        search.settings().set_search_text(Some("alpha"));
+        assert!(
+            search
+                .forward(&resources.editor.response.body.view.buffer().start_iter())
+                .is_some()
+        );
+        copy_action.activate(None);
+
+        // Closing an unaccepted dialog must release it and its children. Keep
+        // the entry to detect callbacks that retain the sibling default button.
+        dialogs::show_create_collection_dialog(
+            &window,
+            &resources.state,
+            &resources.sidebar,
+            &resources.editor,
+            &resources.sidebar.status,
+        );
+        let dialog = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+            .find(|candidate| candidate.title().as_deref() == Some("Create collection"))
+            .unwrap();
+        let content = dialog.child().unwrap();
+        let entry = content
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .downcast::<Entry>()
+            .unwrap();
+        let default = dialog.default_widget().unwrap().downgrade();
+        let weak_dialog = dialog.downgrade();
+        entry.set_text("New collection");
+        assert!(dialog.default_widget().unwrap().is_sensitive());
+        dialog.close();
+        drop(content);
+        drop(dialog);
+        while context.pending() {
+            context.iteration(false);
+        }
+        assert!(weak_dialog.upgrade().is_none());
+        assert!(default.upgrade().is_none());
+        entry.set_text("Detached entry");
+        drop(entry);
+
+        let collection = CollectionSummary::new("Rename lifetime test");
+        let node = pakpos::collections::CollectionNode::request(collection.id, "Original", 0);
+        let request_id = node.id;
+        resources
+            .state
+            .update(Action::SetCollection(CollectionSession::from_requests(
+                collection,
+                vec![node],
+            )));
+        dialogs::show_rename_request_dialog(
+            request_id,
+            &window,
+            &resources.state,
+            &resources.sidebar,
+            &resources.editor,
+        );
+        let dialog = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+            .find(|candidate| candidate.title().as_deref() == Some("Rename request"))
+            .unwrap();
+        let entry = dialog
+            .child()
+            .unwrap()
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .downcast::<Entry>()
+            .unwrap();
+        let done = dialog
+            .default_widget()
+            .unwrap()
+            .downcast::<Button>()
+            .unwrap();
+        let weak_dialog = dialog.downgrade();
+        let weak_done = done.downgrade();
+        entry.set_text("Renamed");
+        done.emit_clicked();
+        assert_eq!(
+            resources
+                .state
+                .collection
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .request_name(request_id),
+            Some("Renamed")
+        );
+        drop(done);
+        drop(dialog);
+        while context.pending() {
+            context.iteration(false);
+        }
+        assert!(weak_dialog.upgrade().is_none());
+        assert!(weak_done.upgrade().is_none());
+        entry.set_text("Detached rename entry");
+        drop(entry);
+
+        // Leave a modal dialog open: destroying its parent must destroy it too.
+        dialogs::show_create_collection_dialog(
+            &window,
+            &resources.state,
+            &resources.sidebar,
+            &resources.editor,
+            &resources.sidebar.status,
+        );
+        let open_dialog = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+            .find(|candidate| candidate.title().as_deref() == Some("Create collection"))
+            .unwrap()
+            .downgrade();
+
+        drop(resources);
+        assert!(
+            weak_resources.upgrade().is_some(),
+            "window must own its live state"
+        );
+        window.destroy();
+        drop(window);
+        while context.pending() {
+            context.iteration(false);
+        }
+        // GtkSourceView finishes asynchronous search/highlight work on idle.
+        let main_loop = glib::MainLoop::new(None, false);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(250), {
+            let main_loop = main_loop.clone();
+            move || main_loop.quit()
+        });
+        main_loop.run();
+        assert!(weak_resources.upgrade().is_none());
+        assert!(weak_state.upgrade().is_none());
+        assert!(weak_sidebar.upgrade().is_none());
+        assert!(weak_editor.upgrade().is_none());
+        assert!(weak_autosave.upgrade().is_none());
+        assert!(glib::clone::Upgrade::upgrade(&weak_toast).is_none());
+        assert!(
+            poll.is_destroyed(),
+            "window disposal must remove the autosave source"
+        );
+        assert!(
+            weak_styles.upgrade().is_none(),
+            "display must release the CSS provider"
+        );
+        assert!(open_dialog.upgrade().is_none());
+        assert!(weak_search.upgrade().is_none());
+        assert!(weak_request_view.upgrade().is_none());
+        assert!(weak_request_buffer.upgrade().is_none());
+        assert!(weak_response_view.upgrade().is_none());
+        assert!(weak_response_buffer.upgrade().is_none());
+        // External handles to old actions/buttons cannot keep the UI alive;
+        // invoking them after teardown safely does nothing.
+        copy_action.activate(None);
+        paste_action.activate(None);
+        send_action.activate(None);
+        format_button.emit_clicked();
+    }
+}
+
+/// Run separately from other GTK tests because GTK belongs to one test thread.
+#[test]
+#[ignore = "requires a GTK display"]
+fn collection_switch_lifetimes() {
+    gtk::init().expect("GTK display required");
+    sourceview5::init();
+    let window = ApplicationWindow::builder()
+        .title("Pakpos collection memory verification")
+        .default_width(900)
+        .default_height(600)
+        .build();
+    let autosave = AutosaveTrigger::default();
+    let sidebar = build_sidebar(autosave.clone());
+    let (_, headers_box, header_rows) = build_headers_page(&autosave);
+    let (body_page, body) = build_body_page(&window, &autosave);
+    let editor = Rc::new(EditorWidgetHandles {
+        method: DropDown::from_strings(&["GET", "POST"]),
+        url: Entry::new(),
+        headers_box,
+        header_rows,
+        body,
+        response: ResponseWidgets {
+            body: build_source_viewer(),
+            metadata: Label::new(None),
+            headers: gtk::TextView::new(),
+        },
+    });
+    let root = GtkBox::new(Orientation::Vertical, 0);
+    root.append(&sidebar.root);
+    root.append(&editor.headers_box);
+    root.append(&body_page);
+    root.append(&editor.response.body.root);
+    window.set_child(Some(&root));
+    window.present();
+    let state = Rc::new(RequestState::default());
+    let context = glib::MainContext::default();
+    for iteration in 0..100 {
+        let previous_rows: Vec<_> = sidebar
+            .request_rows
+            .borrow()
+            .values()
+            .map(|row| row.downgrade())
+            .collect();
+        let previous_header = editor.header_rows.borrow()[0].row.downgrade();
+        let previous_form = editor.body.form_rows.borrow()[0].row.downgrade();
+        let previous_multipart = editor.body.multipart_rows.borrow()[0].row.downgrade();
+        let summary = CollectionSummary::new(format!("Collection {iteration}"));
+        let nodes: Vec<_> = (0..1000)
+            .map(|position| {
+                pakpos::collections::CollectionNode::request(
+                    summary.id,
+                    format!("Request {position}"),
+                    position,
+                )
+            })
+            .collect();
+        let active_node = nodes[0].clone();
+        let id = active_node.id;
+        let mut session = CollectionSession::from_requests(summary, nodes);
+        let request = Request {
+            url: format!("https://example.com/{iteration}"),
+            body: pakpos::models::RequestBody::Json(format!(
+                "{{\"data\":\"{}\"}}",
+                "x".repeat(64 * 1024)
+            )),
+            ..Request::default()
+        };
+        session.apply_loaded_request(pakpos::collections::CollectionRequest {
+            node: active_node,
+            request: Arc::new(request),
+        });
+        let payload = session.shared_request(id).unwrap();
+        let previous_payload = Arc::downgrade(&payload);
+        state.update(Action::SetCollection(session));
+        render_request_buttons(&state, &sidebar, &editor);
+        apply_loaded_request(id, &state, &sidebar, &editor);
+        editor
+            .response
+            .body
+            .view
+            .buffer()
+            .set_text(&"response\n".repeat(8192));
+        editor.response.clear();
+        assert!(
+            !editor.body.json_editor.buffer().can_undo(),
+            "navigation retained request undo history"
+        );
+        assert!(
+            !editor.response.body.view.buffer().can_undo(),
+            "navigation retained response undo history"
+        );
+        drop(payload);
+        assert!(
+            previous_rows.iter().all(|row| row.upgrade().is_none()),
+            "old collection rows leaked"
+        );
+        assert!(previous_header.upgrade().is_none(), "old header leaked");
+        assert!(previous_form.upgrade().is_none(), "old form row leaked");
+        assert!(
+            previous_multipart.upgrade().is_none(),
+            "old multipart row leaked"
+        );
+        state.update(Action::SetCollection(CollectionSession::empty(
+            CollectionSummary::new("Empty"),
+        )));
+        assert!(
+            previous_payload.upgrade().is_none(),
+            "old request payload leaked"
+        );
+        // Let GTK allocate and render the new rows before measuring retention.
+        let main_loop = glib::MainLoop::new(None, false);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(30), {
+            let main_loop = main_loop.clone();
+            move || main_loop.quit()
+        });
+        main_loop.run();
+        if iteration % 25 == 0 || iteration == 99 {
+            eprintln!(
+                "collection switch {iteration}: {}",
+                std::fs::read_to_string("/proc/self/status")
+                    .unwrap()
+                    .lines()
+                    .find(|line| line.starts_with("VmRSS:"))
+                    .unwrap()
+            );
+        }
+        while context.pending() {
+            context.iteration(false);
+        }
+    }
+    let response_view = editor.response.body.view.downgrade();
+    let response_search = editor.response.body.search_entry.downgrade();
+    let response_buffer = editor.response.body.view.buffer().downgrade();
+    let request_views: Vec<_> = [
+        &editor.body.json_editor,
+        &editor.body.xml_editor,
+        &editor.body.text_editor,
+    ]
+    .into_iter()
+    .map(|view| (view.downgrade(), view.buffer().downgrade()))
+    .collect();
+    window.set_child(None::<&gtk::Widget>);
+    window.destroy();
+    drop(window);
+    drop(root);
+    drop(body_page);
+    drop(editor);
+    while context.pending() {
+        context.iteration(false);
+    }
+    assert!(
+        response_search.upgrade().is_none(),
+        "response search leaked"
+    );
+    assert!(response_view.upgrade().is_none(), "response view leaked");
+    assert!(
+        response_buffer.upgrade().is_none(),
+        "response buffer leaked"
+    );
+    assert!(
+        request_views
+            .iter()
+            .all(|(view, buffer)| view.upgrade().is_none() && buffer.upgrade().is_none()),
+        "request editor or buffer leaked"
+    );
 }
 
 fn assert_source_folding(view: &sourceview5::View, text: &str) {
@@ -556,7 +952,7 @@ fn widget_lifetimes() {
     gtk::init().expect("GTK display required");
     sourceview5::init();
     let window = ApplicationWindow::builder().build();
-    install_styles(&gtk::prelude::WidgetExt::display(&window));
+    let _styles = install_styles(&gtk::prelude::WidgetExt::display(&window));
     let autosave = AutosaveTrigger::default();
     let sidebar = build_sidebar(autosave.clone());
     let (_, headers_box, header_rows) = build_headers_page(&autosave);
@@ -594,7 +990,7 @@ fn widget_lifetimes() {
     assert!(!response_body.view.is_editable());
     assert_eq!(response_body.view.wrap_mode(), gtk::WrapMode::None);
     assert!(!response_body.search_revealer.reveals_child());
-    assert!(response_body.search_settings.wraps_around());
+    assert!(response_body.search_context.settings().wraps_around());
     let response_buffer = response_body
         .view
         .buffer()
@@ -625,7 +1021,11 @@ fn widget_lifetimes() {
         .search_entry
         .emit_by_name::<()>("search-changed", &[]);
     assert_eq!(
-        response_body.search_settings.search_text().as_deref(),
+        response_body
+            .search_context
+            .settings()
+            .search_text()
+            .as_deref(),
         Some("alpha")
     );
     let (start, end) = response_buffer
@@ -644,7 +1044,13 @@ fn widget_lifetimes() {
     assert_eq!((start.offset(), end.offset()), (0, 5));
     response_body.search_entry.emit_stop_search();
     assert!(!response_body.search_revealer.reveals_child());
-    assert!(response_body.search_settings.search_text().is_none());
+    assert!(
+        response_body
+            .search_context
+            .settings()
+            .search_text()
+            .is_none()
+    );
     let form = editor.body.form_rows.borrow()[0].clone();
     assert_has_accessible_label(&form.enabled);
     assert_has_accessible_label(&form.name);

@@ -55,6 +55,17 @@ created on demand and unparented when closed. Selecting a lazy request updates i
 existing sidebar row instead of rebuilding the list. The autosave flag is consumed
 before capturing the editor, including when there are no pending changes.
 
+Each window owns a `WindowResources` aggregate through its disposal handler.
+It keeps application state, widget handles, the toast presenter, and the CSS
+registration alive. Signals, file/clipboard callbacks, effect completions, and
+deferred UI work use weak references with explicit fallback return values where
+needed. Disposing the window drops its resources and removes its autosave source
+and display CSS provider. Toast and folding owners cancel their outstanding
+sources on drop; theme handlers are disconnected when the target buffer is
+disposed. The response widget aggregate explicitly owns its search context.
+The source buffer deliberately owns folding state through one signal handler;
+folding state holds weak references back to the buffer and view.
+
 SQLite stores at most one eligible response per request UUID. HTTP workers replace
 that row after completion, and request selection loads it on demand without retaining
 an application-level response cache. Foreign-key cascades delete response metadata,

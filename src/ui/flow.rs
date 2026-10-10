@@ -89,46 +89,53 @@ fn import_postman(
         return;
     };
     show_message(response_summary, "Importing Postman collection…");
-    state.effects.run(effect, {
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let response_summary = response_summary.clone();
-        move |output| {
-            let EffectOutput::PostmanImported(result) = output else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            match result {
-                Ok(imported) => {
-                    let mut session =
-                        CollectionSession::from_requests(imported.collection, imported.nodes);
-                    let first_request = imported.first_request;
-                    let first_id = first_request.as_ref().map(|request| request.node.id);
-                    if let Some(request) = first_request {
-                        session.apply_loaded_request(request);
+    state.effects.run(
+        effect,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            move |output| {
+                let EffectOutput::PostmanImported(result) = output else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                match result {
+                    Ok(imported) => {
+                        let mut session =
+                            CollectionSession::from_requests(imported.collection, imported.nodes);
+                        let first_request = imported.first_request;
+                        let first_id = first_request.as_ref().map(|request| request.node.id);
+                        if let Some(request) = first_request {
+                            session.apply_loaded_request(request);
+                        }
+                        if let Some(request_id) = first_id {
+                            session.select_request(request_id);
+                        }
+                        state.update(Action::SetCollection(session));
+                        editor.response.clear();
+                        sidebar.search.set_text("");
+                        sidebar.applied_search.replace(String::new());
+                        render_request_buttons(&state, &sidebar, &editor);
+                        if let Some(request_id) = first_id {
+                            apply_loaded_request(request_id, &state, &sidebar, &editor);
+                            sync_active_request_row(&state, &sidebar, Some(request_id));
+                        } else {
+                            clear_request_editor(&sidebar, &editor);
+                        }
+                        refresh_collection_choices(&state, &sidebar, &editor, &response_summary);
+                        show_message(&response_summary, "Imported the Postman collection.");
                     }
-                    if let Some(request_id) = first_id {
-                        session.select_request(request_id);
-                    }
-                    state.update(Action::SetCollection(session));
-                    editor.response.clear();
-                    sidebar.search.set_text("");
-                    sidebar.applied_search.replace(String::new());
-                    render_request_buttons(&state, &sidebar, &editor);
-                    if let Some(request_id) = first_id {
-                        apply_loaded_request(request_id, &state, &sidebar, &editor);
-                        sync_active_request_row(&state, &sidebar, Some(request_id));
-                    } else {
-                        clear_request_editor(&sidebar, &editor);
-                    }
-                    refresh_collection_choices(&state, &sidebar, &editor, &response_summary);
-                    show_message(&response_summary, "Imported the Postman collection.");
+                    Err(error) => show_error(&response_summary, &error),
                 }
-                Err(error) => show_error(&response_summary, &error),
             }
-        }
-    });
+        ),
+    );
 }
 
 fn export_postman(
@@ -153,27 +160,32 @@ fn export_postman(
         return;
     };
     show_message(response_summary, "Exporting Postman collection…");
-    state.effects.run(effect, {
-        let state = state.clone();
-        let response_summary = response_summary.clone();
-        move |output| {
-            let EffectOutput::PostmanExported {
-                destination,
-                result,
-            } = output
-            else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            match result {
-                Ok(()) => show_message(
-                    &response_summary,
-                    &format!("Exported Postman collection to {}.", destination.display()),
-                ),
-                Err(error) => show_error(&response_summary, &error),
+    state.effects.run(
+        effect,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            response_summary,
+            move |output| {
+                let EffectOutput::PostmanExported {
+                    destination,
+                    result,
+                } = output
+                else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                match result {
+                    Ok(()) => show_message(
+                        &response_summary,
+                        &format!("Exported Postman collection to {}.", destination.display()),
+                    ),
+                    Err(error) => show_error(&response_summary, &error),
+                }
             }
-        }
-    });
+        ),
+    );
 }
 
 pub(super) fn pending_collection_save(state: &Rc<RequestState>) -> Option<CollectionChanges> {
@@ -204,29 +216,77 @@ pub(super) fn autosave_current_collection(
         return;
     };
     show_message(response_summary, "Saving changes automatically…");
-    state.effects.run(effect, {
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let response_summary = response_summary.clone();
-        let window = window.clone();
-        move |output| {
-            let EffectOutput::CollectionSaved {
-                changes: pending,
-                result,
-            } = output
-            else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            match result {
-                Ok(()) => {
-                    state.update(Action::CollectionSaved(pending));
-                    capture_active_request(&state, &sidebar, &editor);
-                    show_message(&response_summary, "Changes saved automatically.");
+    state.effects.run(
+        effect,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            #[weak]
+            window,
+            move |output| {
+                let EffectOutput::CollectionSaved {
+                    changes: pending,
+                    result,
+                } = output
+                else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                match result {
+                    Ok(()) => {
+                        state.update(Action::CollectionSaved(pending));
+                        capture_active_request(&state, &sidebar, &editor);
+                        show_message(&response_summary, "Changes saved automatically.");
 
-                    if state.close_after_autosave.get() {
-                        if collection_is_dirty(&state) {
+                        if state.close_after_autosave.get() {
+                            if collection_is_dirty(&state) {
+                                autosave_current_collection(
+                                    &state,
+                                    &sidebar,
+                                    &editor,
+                                    &response_summary,
+                                    &window,
+                                );
+                            } else {
+                                state.update(Action::CloseReady);
+                                state.allow_close.set(true);
+                                window.close();
+                            }
+                            return;
+                        }
+
+                        let AppEvent::DeferredAfterSave(action) =
+                            state.update(Action::TakeDeferredAfterSave).event
+                        else {
+                            return;
+                        };
+                        if let Some(action) = action {
+                            if collection_is_dirty(&state) {
+                                state.update(Action::DeferAfterSave(action));
+                                autosave_current_collection(
+                                    &state,
+                                    &sidebar,
+                                    &editor,
+                                    &response_summary,
+                                    &window,
+                                );
+                            } else {
+                                perform_deferred_action(
+                                    action,
+                                    &window,
+                                    &state,
+                                    &sidebar,
+                                    &editor,
+                                    &response_summary,
+                                );
+                            }
+                        } else if collection_is_dirty(&state) {
                             autosave_current_collection(
                                 &state,
                                 &sidebar,
@@ -234,60 +294,20 @@ pub(super) fn autosave_current_collection(
                                 &response_summary,
                                 &window,
                             );
-                        } else {
-                            state.update(Action::CloseReady);
-                            state.allow_close.set(true);
-                            window.close();
                         }
-                        return;
                     }
-
-                    let AppEvent::DeferredAfterSave(action) =
-                        state.update(Action::TakeDeferredAfterSave).event
-                    else {
-                        return;
-                    };
-                    if let Some(action) = action {
-                        if collection_is_dirty(&state) {
-                            state.update(Action::DeferAfterSave(action));
-                            autosave_current_collection(
-                                &state,
-                                &sidebar,
-                                &editor,
-                                &response_summary,
-                                &window,
-                            );
-                        } else {
-                            perform_deferred_action(
-                                action,
-                                &window,
-                                &state,
-                                &sidebar,
-                                &editor,
-                                &response_summary,
-                            );
-                        }
-                    } else if collection_is_dirty(&state) {
-                        autosave_current_collection(
-                            &state,
-                            &sidebar,
-                            &editor,
+                    Err(error) => {
+                        state.update(Action::AutosaveFailed);
+                        sync_collection_picker(&state, &sidebar);
+                        show_error(
                             &response_summary,
-                            &window,
+                            &format!("Could not autosave collection changes: {error}"),
                         );
                     }
                 }
-                Err(error) => {
-                    state.update(Action::AutosaveFailed);
-                    sync_collection_picker(&state, &sidebar);
-                    show_error(
-                        &response_summary,
-                        &format!("Could not autosave collection changes: {error}"),
-                    );
-                }
             }
-        }
-    });
+        ),
+    );
 }
 
 pub(super) fn load_collection(
@@ -302,39 +322,52 @@ pub(super) fn load_collection(
         return;
     };
     show_message(response_summary, "Opening collection…");
-    state.effects.run(effect, {
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let response_summary = response_summary.clone();
-        move |output| {
-            let EffectOutput::CollectionLoaded { collection, result } = output else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            match result {
-                Ok(nodes) => {
-                    let session = CollectionSession::from_requests(collection, nodes);
-                    let first_request = session.first_request();
-                    state.update(Action::SetCollection(session));
-                    sidebar.search.set_text("");
-                    sidebar.applied_search.replace(String::new());
-                    sync_collection_picker(&state, &sidebar);
-                    render_request_buttons(&state, &sidebar, &editor);
-                    if let Some(request_id) = first_request {
-                        select_request(request_id, &state, &sidebar, &editor, &response_summary);
-                    } else {
-                        clear_request_editor(&sidebar, &editor);
-                        show_message(&response_summary, "Opened an empty collection.");
+    state.effects.run(
+        effect,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            move |output| {
+                let EffectOutput::CollectionLoaded { collection, result } = output else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                match result {
+                    Ok(nodes) => {
+                        let session = CollectionSession::from_requests(collection, nodes);
+                        let first_request = session.first_request();
+                        state.update(Action::SetCollection(session));
+                        sidebar.search.set_text("");
+                        sidebar.applied_search.replace(String::new());
+                        sync_collection_picker(&state, &sidebar);
+                        render_request_buttons(&state, &sidebar, &editor);
+                        if let Some(request_id) = first_request {
+                            select_request(
+                                request_id,
+                                &state,
+                                &sidebar,
+                                &editor,
+                                &response_summary,
+                            );
+                        } else {
+                            clear_request_editor(&sidebar, &editor);
+                            show_message(&response_summary, "Opened an empty collection.");
+                        }
+                    }
+                    Err(error) => {
+                        sync_collection_picker(&state, &sidebar);
+                        show_error(&response_summary, &error);
                     }
                 }
-                Err(error) => {
-                    sync_collection_picker(&state, &sidebar);
-                    show_error(&response_summary, &error);
-                }
             }
-        }
-    });
+        ),
+    );
 }
 
 pub(super) fn add_collection_request(
@@ -383,31 +416,38 @@ pub(super) fn duplicate_request(
         return;
     };
     show_message(response_summary, "Loading request…");
-    state.effects.run(effect, {
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let response_summary = response_summary.clone();
-        move |output| {
-            let EffectOutput::RequestLoaded { result, .. } = output else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            match result {
-                Ok(source) => {
-                    append_duplicate_request(
-                        source.node,
-                        source.request,
-                        &state,
-                        &sidebar,
-                        &editor,
-                    );
-                    show_message(&response_summary, "Duplicated the request.");
+    state.effects.run(
+        effect,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            move |output| {
+                let EffectOutput::RequestLoaded { result, .. } = output else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                match result {
+                    Ok(source) => {
+                        append_duplicate_request(
+                            source.node,
+                            source.request,
+                            &state,
+                            &sidebar,
+                            &editor,
+                        );
+                        show_message(&response_summary, "Duplicated the request.");
+                    }
+                    Err(error) => show_error(&response_summary, &error),
                 }
-                Err(error) => show_error(&response_summary, &error),
             }
-        }
-    });
+        ),
+    );
 }
 
 pub(super) fn append_duplicate_request(
@@ -456,26 +496,32 @@ pub(super) fn copy_request_as_curl(
         return;
     };
     show_message(response_summary, "Loading request…");
-    state.effects.run(effect, {
-        let state = state.clone();
-        let response_summary = response_summary.clone();
-        let clipboard = clipboard.clone();
-        move |output| {
-            let EffectOutput::RequestLoaded { result, .. } = output else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            match result {
-                Ok(request) => copy_request_to_clipboard(
-                    request.request,
-                    &state,
-                    &response_summary,
-                    &clipboard,
-                ),
-                Err(error) => show_error(&response_summary, &error),
+    state.effects.run(
+        effect,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            response_summary,
+            #[weak]
+            clipboard,
+            move |output| {
+                let EffectOutput::RequestLoaded { result, .. } = output else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                match result {
+                    Ok(request) => copy_request_to_clipboard(
+                        request.request,
+                        &state,
+                        &response_summary,
+                        &clipboard,
+                    ),
+                    Err(error) => show_error(&response_summary, &error),
+                }
             }
-        }
-    });
+        ),
+    );
 }
 
 pub(super) fn copy_request_to_clipboard(
@@ -564,39 +610,45 @@ pub(super) fn select_request(
         return;
     };
     show_message(response_summary, "Loading request…");
-    state.effects.run(effect, {
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let response_summary = response_summary.clone();
-        move |output| {
-            let EffectOutput::RequestLoaded { result, .. } = output else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            match result {
-                Ok(saved_request) => {
-                    let still_active = state
-                        .collection
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|session| session.active_request() == Some(request_id));
-                    if still_active {
-                        state.update(Action::ApplyLoadedRequest(saved_request));
+    state.effects.run(
+        effect,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            move |output| {
+                let EffectOutput::RequestLoaded { result, .. } = output else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                match result {
+                    Ok(saved_request) => {
+                        let still_active =
+                            state.collection.borrow().as_ref().is_some_and(|session| {
+                                session.active_request() == Some(request_id)
+                            });
+                        if still_active {
+                            state.update(Action::ApplyLoadedRequest(saved_request));
+                        }
+                        apply_loaded_request(request_id, &state, &sidebar, &editor);
+                        sync_request_method(&state, &sidebar, request_id);
+                        load_response_for_request(request_id, &state, &editor, &response_summary);
+                        show_message(&response_summary, "Loaded the saved request.");
                     }
-                    apply_loaded_request(request_id, &state, &sidebar, &editor);
-                    sync_request_method(&state, &sidebar, request_id);
-                    load_response_for_request(request_id, &state, &editor, &response_summary);
-                    show_message(&response_summary, "Loaded the saved request.");
-                }
-                Err(error) => {
-                    clear_request_editor(&sidebar, &editor);
-                    sync_active_request_row(&state, &sidebar, Some(request_id));
-                    show_error(&response_summary, &error);
+                    Err(error) => {
+                        clear_request_editor(&sidebar, &editor);
+                        sync_active_request_row(&state, &sidebar, Some(request_id));
+                        show_error(&response_summary, &error);
+                    }
                 }
             }
-        }
-    });
+        ),
+    );
 }
 
 fn queue_request_button_render(
@@ -604,12 +656,17 @@ fn queue_request_button_render(
     sidebar: &SidebarWidgets,
     editor: &EditorWidgets,
 ) {
-    let state = state.clone();
-    let sidebar = sidebar.clone();
-    let editor = editor.clone();
     // Rebuilding a list from inside one of its row signal handlers can re-enter
     // GTK selection machinery. Queue the render after the current signal returns.
-    glib::idle_add_local_once(move || render_request_buttons(&state, &sidebar, &editor));
+    glib::idle_add_local_once(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        move || render_request_buttons(&state, &sidebar, &editor)
+    ));
 }
 
 pub(super) fn capture_active_request(
@@ -698,38 +755,44 @@ fn load_response_for_request(
         editor.response.clear();
         return;
     };
-    state.effects.run(effect, {
-        let state = state.clone();
-        let editor = editor.clone();
-        let response_summary = response_summary.clone();
-        move |output| {
-            let EffectOutput::ResponseLoaded {
-                request_id: loaded_id,
-                result,
-            } = output
-            else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            let is_active = loaded_id == request_id
-                && state
-                    .collection
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|session| session.active_request() == Some(request_id));
-            if !is_active {
-                return;
-            }
-            match result {
-                Ok(Some(response)) => editor.response.display(&response),
-                Ok(None) => editor.response.clear(),
-                Err(error) => {
-                    editor.response.clear();
-                    show_error(&response_summary, &error);
+    state.effects.run(
+        effect,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            move |output| {
+                let EffectOutput::ResponseLoaded {
+                    request_id: loaded_id,
+                    result,
+                } = output
+                else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                let is_active = loaded_id == request_id
+                    && state
+                        .collection
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|session| session.active_request() == Some(request_id));
+                if !is_active {
+                    return;
+                }
+                match result {
+                    Ok(Some(response)) => editor.response.display(&response),
+                    Ok(None) => editor.response.clear(),
+                    Err(error) => {
+                        editor.response.clear();
+                        show_error(&response_summary, &error);
+                    }
                 }
             }
-        }
-    });
+        ),
+    );
 }
 
 pub(super) fn collection_is_dirty(state: &Rc<RequestState>) -> bool {

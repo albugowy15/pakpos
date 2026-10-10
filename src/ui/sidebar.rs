@@ -92,21 +92,20 @@ pub(super) fn setup_collection_actions(
     editor: &EditorWidgets,
     state: &Rc<RequestState>,
     response_summary: &Label,
-) {
+) -> glib::SourceId {
     let new_action = gio::SimpleAction::new("new-collection", None);
-    new_action.connect_activate({
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
-        let response_summary = response_summary.clone();
-        let window = window.downgrade();
+    new_action.connect_activate(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        #[weak]
+        response_summary,
+        #[weak]
+        window,
         move |_, _| {
-            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
-                return;
-            };
-            let Some(window) = window.upgrade() else {
-                return;
-            };
             continue_after_autosave(
                 &window,
                 &state,
@@ -116,123 +115,133 @@ pub(super) fn setup_collection_actions(
                 DeferredAction::CreateCollection,
             );
         }
-    });
+    ));
     window.add_action(&new_action);
 
     let focus_collections_action = gio::SimpleAction::new("focus-collections", None);
-    focus_collections_action.connect_activate({
-        let collection_picker = sidebar.collection_picker.clone();
+    focus_collections_action.connect_activate(glib::clone!(
+        #[weak(rename_to = collection_picker)]
+        sidebar.collection_picker,
         move |_, _| {
             collection_picker.grab_focus();
         }
-    });
+    ));
     window.add_action(&focus_collections_action);
 
     application.set_accels_for_action("win.new-collection", &["<Control>n"]);
     application.set_accels_for_action("win.focus-collections", &["<Control>o"]);
 
     let new_request_action = gio::SimpleAction::new("new-request", None);
-    new_request_action.connect_activate({
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
-        let response_summary = response_summary.clone();
+    new_request_action.connect_activate(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        #[weak]
+        response_summary,
         move |_, _| {
-            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
-                return;
-            };
             if add_collection_request(&state, &sidebar, &editor) {
                 show_message(&response_summary, "Created HTTP Request.");
             } else {
                 show_error(&response_summary, "Create or select a collection first.");
             }
         }
-    });
+    ));
     window.add_action(&new_request_action);
     sidebar.new_request.set_action_name(Some("win.new-request"));
     application.set_accels_for_action("win.new-request", &["<Control><Shift>n"]);
 
-    sidebar.collection_picker.connect_selected_notify({
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
-        let response_summary = response_summary.clone();
-        let window = window.downgrade();
-        move |picker| {
-            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
-                return;
-            };
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            if state.syncing_collection_picker.get() {
-                return;
+    sidebar
+        .collection_picker
+        .connect_selected_notify(glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            #[weak]
+            window,
+            move |picker| {
+                if state.syncing_collection_picker.get() {
+                    return;
+                }
+                if state.collection_busy.get() {
+                    sync_collection_picker(&state, &sidebar);
+                    return;
+                }
+                let Some(collection) = sidebar
+                    .collection_choices
+                    .borrow()
+                    .get(picker.selected() as usize)
+                    .cloned()
+                else {
+                    return;
+                };
+                if state
+                    .collection
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|session| session.summary().id == collection.id)
+                {
+                    return;
+                }
+                continue_after_autosave(
+                    &window,
+                    &state,
+                    &sidebar,
+                    &editor,
+                    &response_summary,
+                    DeferredAction::LoadCollection(collection),
+                );
             }
-            if state.collection_busy.get() {
-                sync_collection_picker(&state, &sidebar);
-                return;
-            }
-            let Some(collection) = sidebar
-                .collection_choices
-                .borrow()
-                .get(picker.selected() as usize)
-                .cloned()
-            else {
-                return;
-            };
-            if state
-                .collection
-                .borrow()
-                .as_ref()
-                .is_some_and(|session| session.summary().id == collection.id)
-            {
-                return;
-            }
-            continue_after_autosave(
-                &window,
-                &state,
-                &sidebar,
-                &editor,
-                &response_summary,
-                DeferredAction::LoadCollection(collection),
-            );
-        }
-    });
+        ));
 
-    sidebar.search.connect_activate({
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
+    sidebar.search.connect_activate(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
         move |_| {
-            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
-                return;
-            };
             apply_request_search(&state, &sidebar, &editor);
         }
-    });
+    ));
     let search_focus = EventControllerFocus::new();
-    search_focus.connect_leave({
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
+    search_focus.connect_leave(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
         move |_| {
-            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
-                return;
-            };
-            let state = state.clone();
-            glib::idle_add_local_once(move || apply_request_search(&state, &sidebar, &editor));
+            glib::idle_add_local_once(glib::clone!(
+                #[weak]
+                state,
+                #[weak]
+                sidebar,
+                #[weak]
+                editor,
+                move || apply_request_search(&state, &sidebar, &editor)
+            ));
         }
-    });
+    ));
     sidebar.search.add_controller(search_focus);
 
-    sidebar.requests.connect_row_selected({
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
+    sidebar.requests.connect_row_selected(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
         move |_, selected_row| {
-            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
-                return;
-            };
             if state.syncing_request_list.get() {
                 return;
             }
@@ -257,23 +266,20 @@ pub(super) fn setup_collection_actions(
                 select_request(request_id, &state, &sidebar, &editor, &sidebar.status);
             }
         }
-    });
+    ));
 
-    refresh_collection_choices(state, sidebar, editor, response_summary);
-
-    sidebar.autosave.replace(Some(Rc::new({
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
-        let response_summary = response_summary.clone();
-        let window = window.downgrade();
+    sidebar.autosave.replace(Some(Rc::new(glib::clone!(
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        #[weak]
+        response_summary,
+        #[weak]
+        window,
         move || {
-            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
-                return;
-            };
-            let Some(window) = window.upgrade() else {
-                return;
-            };
             if !state.applying_editor.get() {
                 state.autosave_requested.set(true);
                 if !state.collection_busy.get() {
@@ -287,26 +293,36 @@ pub(super) fn setup_collection_actions(
                 }
             }
         }
-    })));
-    glib::timeout_add_local(AUTOSAVE_POLL_INTERVAL, {
-        let state = state.clone();
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
-        let response_summary = response_summary.clone();
-        let window = window.downgrade();
-        move || {
-            let (Some(sidebar), Some(editor)) = (sidebar.upgrade(), editor.upgrade()) else {
-                return glib::ControlFlow::Break;
-            };
-            let Some(window) = window.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if state.autosave_requested.get() && !state.collection_busy.get() {
-                autosave_current_collection(&state, &sidebar, &editor, &response_summary, &window);
+    ))));
+    glib::timeout_add_local(
+        AUTOSAVE_POLL_INTERVAL,
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            #[weak]
+            window,
+            #[upgrade_or]
+            glib::ControlFlow::Break,
+            move || {
+                if state.autosave_requested.get() && !state.collection_busy.get() {
+                    autosave_current_collection(
+                        &state,
+                        &sidebar,
+                        &editor,
+                        &response_summary,
+                        &window,
+                    );
+                }
+                glib::ControlFlow::Continue
             }
-            glib::ControlFlow::Continue
-        }
-    });
+        ),
+    )
 }
 
 pub(super) fn refresh_collection_choices(
@@ -321,64 +337,77 @@ pub(super) fn refresh_collection_choices(
         return;
     }
     state.autosave_requested.set(false);
-    state.effects.run(update.effect.unwrap(), {
-        let state = state.clone();
-        let sidebar = sidebar.clone();
-        let editor = editor.clone();
-        let response_summary = response_summary.clone();
-        move |output| {
-            let EffectOutput::CollectionsListed(result) = output else {
-                return;
-            };
-            state.update(Action::CollectionOperationCompleted);
-            match result {
-                Ok(collection_list) => {
-                    let collections = collection_list.collections;
-                    let active_id = state
-                        .collection
-                        .borrow()
-                        .as_ref()
-                        .map(|session| session.summary().id);
-                    let label_refs = collections
-                        .iter()
-                        .map(|collection| collection.name.as_str())
-                        .collect::<Vec<_>>();
-                    let model = StringList::new(&label_refs);
-                    let selected_collection = active_id
-                        .and_then(|id| {
-                            collections
-                                .iter()
-                                .find(|collection| collection.id == id)
-                                .cloned()
-                        })
-                        .or(collection_list.most_recently_opened)
-                        .or_else(|| collections.first().cloned());
-                    let selected = selected_collection
-                        .as_ref()
-                        .and_then(|selected| {
-                            collections
-                                .iter()
-                                .position(|collection| collection.id == selected.id)
-                        })
-                        .map_or(u32::MAX, |index| index as u32);
-                    state.syncing_collection_picker.set(true);
-                    sidebar.collection_picker.set_model(Some(&model));
-                    sidebar.collection_picker.set_selected(selected);
-                    sidebar
-                        .collection_picker
-                        .set_sensitive(!collections.is_empty());
-                    sidebar.collection_choices.replace(collections);
-                    state.syncing_collection_picker.set(false);
-                    if state.collection.borrow().is_none()
-                        && let Some(collection) = selected_collection
-                    {
-                        load_collection(collection, &state, &sidebar, &editor, &response_summary);
+    state.effects.run(
+        update.effect.unwrap(),
+        glib::clone!(
+            #[weak]
+            state,
+            #[weak]
+            sidebar,
+            #[weak]
+            editor,
+            #[weak]
+            response_summary,
+            move |output| {
+                let EffectOutput::CollectionsListed(result) = output else {
+                    return;
+                };
+                state.update(Action::CollectionOperationCompleted);
+                match result {
+                    Ok(collection_list) => {
+                        let collections = collection_list.collections;
+                        let active_id = state
+                            .collection
+                            .borrow()
+                            .as_ref()
+                            .map(|session| session.summary().id);
+                        let label_refs = collections
+                            .iter()
+                            .map(|collection| collection.name.as_str())
+                            .collect::<Vec<_>>();
+                        let model = StringList::new(&label_refs);
+                        let selected_collection = active_id
+                            .and_then(|id| {
+                                collections
+                                    .iter()
+                                    .find(|collection| collection.id == id)
+                                    .cloned()
+                            })
+                            .or(collection_list.most_recently_opened)
+                            .or_else(|| collections.first().cloned());
+                        let selected = selected_collection
+                            .as_ref()
+                            .and_then(|selected| {
+                                collections
+                                    .iter()
+                                    .position(|collection| collection.id == selected.id)
+                            })
+                            .map_or(u32::MAX, |index| index as u32);
+                        state.syncing_collection_picker.set(true);
+                        sidebar.collection_picker.set_model(Some(&model));
+                        sidebar.collection_picker.set_selected(selected);
+                        sidebar
+                            .collection_picker
+                            .set_sensitive(!collections.is_empty());
+                        sidebar.collection_choices.replace(collections);
+                        state.syncing_collection_picker.set(false);
+                        if state.collection.borrow().is_none()
+                            && let Some(collection) = selected_collection
+                        {
+                            load_collection(
+                                collection,
+                                &state,
+                                &sidebar,
+                                &editor,
+                                &response_summary,
+                            );
+                        }
                     }
+                    Err(error) => show_error(&response_summary, &error),
                 }
-                Err(error) => show_error(&response_summary, &error),
             }
-        }
-    });
+        ),
+    );
 }
 
 pub(super) fn sync_collection_picker(state: &Rc<RequestState>, sidebar: &SidebarWidgets) {
@@ -410,27 +439,23 @@ pub(super) fn attach_request_context_menu(
 ) {
     let gesture = GestureClick::new();
     gesture.set_button(3);
-    gesture.connect_pressed({
-        let request_row = request_row.downgrade();
-        let state = Rc::downgrade(state);
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
+    gesture.connect_pressed(glib::clone!(
+        #[weak]
+        request_row,
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
         move |gesture, _, x, y| {
-            let (Some(request_row), Some(state), Some(sidebar), Some(editor)) = (
-                request_row.upgrade(),
-                state.upgrade(),
-                sidebar.upgrade(),
-                editor.upgrade(),
-            ) else {
-                return;
-            };
             gesture.set_state(gtk::EventSequenceState::Claimed);
             let popover =
                 build_request_context_menu(&request_row, request_id, &state, &sidebar, &editor);
             popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
             popover.popup();
         }
-    });
+    ));
     request_row.add_controller(gesture);
 }
 
@@ -466,91 +491,77 @@ pub(super) fn build_request_context_menu(
     menu.append(&delete);
     popover.set_child(Some(&menu));
 
-    duplicate.connect_clicked({
-        let popover = popover.downgrade();
-        let state = Rc::downgrade(state);
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
+    duplicate.connect_clicked(glib::clone!(
+        #[weak]
+        popover,
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
         move |_| {
-            let (Some(popover), Some(state), Some(sidebar), Some(editor)) = (
-                popover.upgrade(),
-                state.upgrade(),
-                sidebar.upgrade(),
-                editor.upgrade(),
-            ) else {
-                return;
-            };
             popover.popdown();
             duplicate_request(request_id, &state, &sidebar, &editor, &sidebar.status);
         }
-    });
-    delete.connect_clicked({
-        let popover = popover.downgrade();
-        let state = Rc::downgrade(state);
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
-        let request_row = request_row.downgrade();
+    ));
+    delete.connect_clicked(glib::clone!(
+        #[weak]
+        popover,
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        #[weak]
+        request_row,
         move |_| {
-            let (Some(popover), Some(state), Some(sidebar), Some(editor)) = (
-                popover.upgrade(),
-                state.upgrade(),
-                sidebar.upgrade(),
-                editor.upgrade(),
-            ) else {
-                return;
-            };
             popover.popdown();
             let Some(window) = request_row
-                .upgrade()
-                .and_then(|row| row.root())
+                .root()
                 .and_then(|root| root.downcast::<ApplicationWindow>().ok())
             else {
                 return;
             };
             confirm_delete_request(request_id, &window, &state, &sidebar, &editor);
         }
-    });
-    rename.connect_clicked({
-        let popover = popover.downgrade();
-        let state = Rc::downgrade(state);
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
-        let request_row = request_row.downgrade();
+    ));
+    rename.connect_clicked(glib::clone!(
+        #[weak]
+        popover,
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        #[weak]
+        request_row,
         move |_| {
-            let (Some(popover), Some(state), Some(sidebar), Some(editor)) = (
-                popover.upgrade(),
-                state.upgrade(),
-                sidebar.upgrade(),
-                editor.upgrade(),
-            ) else {
-                return;
-            };
             popover.popdown();
             let Some(window) = request_row
-                .upgrade()
-                .and_then(|row| row.root())
+                .root()
                 .and_then(|root| root.downcast::<ApplicationWindow>().ok())
             else {
                 return;
             };
             show_rename_request_dialog(request_id, &window, &state, &sidebar, &editor);
         }
-    });
-    copy_curl.connect_clicked({
-        let popover = popover.downgrade();
-        let state = Rc::downgrade(state);
-        let sidebar = Rc::downgrade(sidebar);
-        let editor = Rc::downgrade(editor);
-        let clipboard = gtk::prelude::WidgetExt::display(request_row).clipboard();
+    ));
+    let clipboard = gtk::prelude::WidgetExt::display(request_row).clipboard();
+    copy_curl.connect_clicked(glib::clone!(
+        #[weak]
+        popover,
+        #[weak]
+        state,
+        #[weak]
+        sidebar,
+        #[weak]
+        editor,
+        #[weak]
+        clipboard,
         move |_| {
-            let (Some(popover), Some(state), Some(sidebar), Some(editor)) = (
-                popover.upgrade(),
-                state.upgrade(),
-                sidebar.upgrade(),
-                editor.upgrade(),
-            ) else {
-                return;
-            };
             popover.popdown();
             copy_request_as_curl(
                 request_id,
@@ -561,7 +572,7 @@ pub(super) fn build_request_context_menu(
                 &clipboard,
             );
         }
-    });
+    ));
 
     popover.connect_closed({
         let sidebar = Rc::downgrade(sidebar);

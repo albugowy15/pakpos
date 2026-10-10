@@ -70,6 +70,142 @@ It checks destruction of replaced/removed header and multipart rows, closed
 context menus, replaced sidebar rows, and consumption of the no-op autosave flag.
 It was run successfully against the local GTK display.
 
+## Collection-switch follow-up (2026-10-10)
+
+Audited revision `0fd933b` after reports of memory increasing during collection
+switches. The old collection aggregate, request payloads, request-list rows, and
+dynamic editor rows are released on replacement. A separate retention bug existed
+in the response viewer: search callbacks retained the view and their own parent
+revealer, while the view's Ctrl+F controller retained the search widgets. These
+reference cycles kept the viewer and its buffer alive after teardown. Callbacks
+now use weak widget references. Theme notifications on the global GTK settings
+object are also disconnected when their target buffer is disposed.
+
+The display-dependent regression below renders 100 successive collections, each
+with 1,000 lazy request records and a loaded 64 KiB JSON body. It also replaces and
+clears response text, checks that navigation clears undo history, checks old rows
+and request payloads through weak references, and checks request/response widget
+and buffer destruction after window teardown. Its teardown assertions fail against
+the original response-viewer code and pass with the fix.
+
+```sh
+cargo test --bin pakpos collection_switch_lifetimes -- --ignored --test-threads=1 --nocapture
+```
+
+Run GTK tests separately: GTK initialization must stay on the same thread, and
+Rust's test harness can use different threads even with `--test-threads=1`.
+
+On the local Wayland display, GTK 4.24.1, GtkSourceView 5.22.0, Rust 1.98.1, debug
+profile, the fixed test reported these process RSS samples:
+
+| Collection index | RSS (KiB) |
+| --- | ---: |
+| 0 | 240,192 |
+| 25 | 255,072 |
+| 50 | 255,072 |
+| 75 | 255,072 |
+| 99 | 255,072 |
+
+The initial rise settles as GTK rendering and allocator resources warm up;
+released allocations do not necessarily lower process RSS immediately. Sustained
+growth on switching was not reproduced. RSS is diagnostic output, not a brittle
+automated threshold; weak-reference destruction is the regression assertion.
+This exercises the GTK rendering/state replacement path, without HTTP or SQLite
+workers. It does not establish a production idle-memory baseline or diagnose every
+possible workload. No storage format or dependencies changed.
+
+## GObject ownership review (2026-10-10)
+
+Reviewed all source modules against the
+[gtk-rs GObject memory-management guide](https://gtk-rs.org/gtk4-rs/stable/latest/book/g_object_memory_management.html).
+The relevant recommendations concern GTK adapters and GLib callbacks. The domain,
+application, HTTP, response, cURL, Postman, formatting, and storage modules own
+ordinary Rust values and immutable request payloads; they contain no GObjects or
+reference-count cycles requiring weak GTK references. Runtime workers keep owned
+operation data until completion, including save snapshots needed for persistence.
+
+Changes applied throughout the UI:
+
+- A window explicitly owns its shared state, sidebar/editor handles, toast
+  presenter, and CSS registration. This preserves real ownership while signal
+  handlers use weak references rather than retaining the objects they observe.
+- Editor controls, collection actions, dialogs, context menus, search controls,
+  and folding handlers use weak captures. Non-unit callbacks return an appropriate
+  fallback if their targets are gone. Shared `Cell`/`RefCell` state remains inside
+  `Rc` owners; GTK objects use their existing reference counting.
+- File/clipboard callbacks, effect completions, and deferred focus/search work
+  also use weak UI captures. Storage operations still finish with owned data;
+  closing the UI cannot keep its widgets alive until an operation completes.
+- Display CSS providers are removed when their window resources drop. The
+  autosave poll is removed immediately on resource disposal. Toast messages
+  replace and cancel the previous timeout; dismissal and final-owner drop cancel
+  it too. Folding owners cancel their refresh source on drop. Global theme
+  handlers disconnect on buffer disposal.
+- Custom collection/request dialogs are destroyed with their parent. The search
+  context has an explicit owner in the response widget aggregate. Folding state
+  deliberately has one strong owner in its buffer's changed handler, with weak
+  backreferences; weakening that final owner would break folding functionality.
+
+The additional ignored GTK regression builds ten complete production windows
+without initial storage effects. It verifies formatting and search-context
+functionality, create/rename dialog teardown, destruction with a parent, state and
+widget release despite retained old action/button handles, CSS removal, and timer
+cleanup. Toast checks replace 100 timers, dismiss a notification, and drop its
+presenter while retaining a child button. Run GTK tests in separate processes:
+
+```sh
+GSK_RENDERER=cairo G_DEBUG=fatal-warnings cargo test --bin pakpos gobject_ownership -- --ignored --test-threads=1
+GSK_RENDERER=cairo G_DEBUG=fatal-warnings cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1
+GSK_RENDERER=cairo G_DEBUG=fatal-warnings cargo test --bin pakpos collection_switch_lifetimes -- --ignored --test-threads=1 --nocapture
+```
+
+Cairo is only a test environment setting to avoid the separately reproduced
+native frame-timing warning; the application keeps GTK's default renderer.
+
+Validation passed: `cargo fmt --all -- --check`,
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`,
+`cargo build --release`, and all three separately invoked GTK tests with fatal
+warnings enabled. The full suite requires permission to bind its local HTTP
+test servers; it passed outside the restricted sandbox. The native C diagnostic
+also compiles with `-Wall -Wextra -Werror`.
+
+The final collection-switch rerun with the Cairo renderer reported 99,628 KiB
+RSS at index 0, 113,560 KiB at indices 25 and 50, and 113,564 KiB at indices 75
+and 99. These diagnostic samples plateau after warm-up; renderer differences mean
+they should not be compared directly with the earlier default-renderer samples.
+
+### Native text-selection retention on GTK 4.24.1
+
+An additional buffer-teardown check found a native GTK issue. A standalone C
+program using only `GtkTextBuffer` releases an unselected buffer, but a buffer
+that has had a selection remains alive even after clearing the selection and
+dropping the last caller reference. No Pakpos callbacks or GtkSourceView objects
+are involved. A reference-count trace points to the native selection content
+provider. GTK's [text-buffer source](https://raw.githubusercontent.com/GNOME/gtk/main/gtk/gtktextbuffer.c)
+creates that provider with a strong buffer reference. This is separate from the
+Pakpos ownership cycles fixed above.
+
+Reproduce on a GTK display:
+
+```sh
+cc examples/gtk_selection_lifetime.c -o /tmp/pakpos-selection-lifetime $(pkg-config --cflags --libs gtk4)
+/tmp/pakpos-selection-lifetime
+```
+
+Observed on the local GTK 4.24.1 installation:
+
+```text
+selected=0 finalized=1
+selected=1 finalized=0
+```
+
+The existing widget behavior test exercises search selection. The new buffer
+ownership test exercises the search context without selecting text so this native
+retention cannot hide a Pakpos reference cycle. Selected buffers remain a known
+limitation of the installed GTK version; freeing GTK's private references manually
+would be unsafe, and changing text-selection behavior would impair the editor.
+This audit does not claim that the application is free of all native-library leaks.
+
 ## Remaining costs and limits
 
 - GTK owns its text storage. Capturing an edited request still materializes owned

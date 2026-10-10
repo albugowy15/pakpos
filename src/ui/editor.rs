@@ -86,19 +86,21 @@ impl BodyWidgets {
             (&self.xml_format, &self.xml_editor, BodyFormat::Xml),
             (&self.text_format, &self.text_editor, BodyFormat::Auto),
         ] {
-            button.connect_clicked({
-                let view = view.downgrade();
-                let autosave = self.autosave.clone();
-                let toast = toast.clone();
+            button.connect_clicked(glib::clone!(
+                #[weak]
+                view,
+                #[weak(rename_to = autosave)]
+                self.autosave,
+                #[weak_allow_none]
+                toast,
                 move |_| {
-                    let Some(view) = view.upgrade() else {
-                        return;
-                    };
-                    if let Err(error) = format_request_body(&view, &autosave, format) {
+                    if let Err(error) = format_request_body(&view, &autosave, format)
+                        && let Some(toast) = toast.as_ref()
+                    {
                         toast.error(&format!("Could not format body: {error}"));
                     }
                 }
-            });
+            ));
         }
     }
 }
@@ -120,12 +122,12 @@ pub(super) struct SourceViewerWidgets {
     pub(super) view: sourceview5::View,
     pub(super) search_revealer: gtk::Revealer,
     pub(super) search_entry: SearchEntry,
-    pub(super) search_settings: sourceview5::SearchSettings,
+    pub(super) search_context: sourceview5::SearchContext,
 }
 
 impl SourceViewerWidgets {
     pub(super) fn reset_search(&self) {
-        self.search_settings.set_search_text(None);
+        self.search_context.settings().set_search_text(None);
         self.search_entry.set_text("");
         self.search_entry.remove_css_class("error");
         self.search_revealer.set_reveal_child(false);
@@ -172,15 +174,19 @@ pub(super) fn request_autosave(autosave: &AutosaveTrigger) {
 
 pub(super) fn autosave_on_blur<W: IsA<gtk::Widget>>(widget: &W, autosave: &AutosaveTrigger) {
     let focus = EventControllerFocus::new();
-    focus.connect_leave({
-        let autosave = autosave.clone();
+    focus.connect_leave(glib::clone!(
+        #[weak]
+        autosave,
         move |_| {
-            let autosave = autosave.clone();
             // Defer until GTK finishes transferring focus; immediate capture can
             // observe a widget midway through its focus-out signal sequence.
-            glib::idle_add_local_once(move || request_autosave(&autosave));
+            glib::idle_add_local_once(glib::clone!(
+                #[weak]
+                autosave,
+                move || request_autosave(&autosave)
+            ));
         }
-    });
+    ));
     widget.add_controller(focus);
 }
 
@@ -203,15 +209,18 @@ pub(super) fn build_headers_page(
     add_header_row(&rows_box, &rows, autosave);
     let add = Button::with_label("Add header");
     add.set_halign(Align::Start);
-    add.connect_clicked({
-        let rows_box = rows_box.clone();
-        let rows = rows.clone();
-        let autosave = autosave.clone();
+    add.connect_clicked(glib::clone!(
+        #[weak]
+        rows_box,
+        #[weak]
+        rows,
+        #[weak]
+        autosave,
         move |_| {
             add_header_row(&rows_box, &rows, &autosave);
             request_autosave(&autosave);
         }
-    });
+    ));
     page.append(&rows_box);
     page.append(&add);
     (page, rows_box, rows)
@@ -245,10 +254,11 @@ pub(super) fn add_header_row(
     value.add_css_class("monospace");
     autosave_on_blur(&name, autosave);
     autosave_on_blur(&value, autosave);
-    enabled.connect_toggled({
-        let autosave = autosave.clone();
+    enabled.connect_toggled(glib::clone!(
+        #[weak]
+        autosave,
         move |_| request_autosave(&autosave)
-    });
+    ));
     let remove = Button::with_label("Remove");
     set_accessible_label(&remove, "Remove header");
     row.append(&enabled);
@@ -263,17 +273,16 @@ pub(super) fn add_header_row(
         name,
         value,
     });
-    remove.connect_clicked({
-        let container = container.downgrade();
-        let rows = Rc::downgrade(rows);
-        let row = row.downgrade();
-        let autosave = autosave.clone();
+    remove.connect_clicked(glib::clone!(
+        #[weak]
+        container,
+        #[weak]
+        rows,
+        #[weak]
+        row,
+        #[weak]
+        autosave,
         move |_| {
-            let (Some(container), Some(rows), Some(row)) =
-                (container.upgrade(), rows.upgrade(), row.upgrade())
-            else {
-                return;
-            };
             let index = {
                 let rows = rows.borrow();
                 rows.iter().position(|item| item.row == row)
@@ -284,7 +293,7 @@ pub(super) fn add_header_row(
                 request_autosave(&autosave);
             }
         }
-    });
+    ));
 }
 
 pub(super) fn build_body_page(
@@ -328,15 +337,18 @@ pub(super) fn build_body_page(
     add_form_urlencoded_row(&form_box, &form_rows, autosave);
     let add_form_field = Button::with_label("Add field");
     add_form_field.set_halign(Align::Start);
-    add_form_field.connect_clicked({
-        let form_box = form_box.clone();
-        let form_rows = form_rows.clone();
-        let autosave = autosave.clone();
+    add_form_field.connect_clicked(glib::clone!(
+        #[weak]
+        form_box,
+        #[weak]
+        form_rows,
+        #[weak]
+        autosave,
         move |_| {
             add_form_urlencoded_row(&form_box, &form_rows, &autosave);
             request_autosave(&autosave);
         }
-    });
+    ));
     form_panel.append(&form_box);
     form_panel.append(&add_form_field);
     let form_scroll = scrolled(&form_panel);
@@ -356,19 +368,20 @@ pub(super) fn build_body_page(
     add_multipart_row(&multipart_box, &multipart_rows, window, autosave);
     let add = Button::with_label("Add field");
     add.set_halign(Align::Start);
-    add.connect_clicked({
-        let multipart_box = multipart_box.clone();
-        let multipart_rows = multipart_rows.clone();
-        let window = window.downgrade();
-        let autosave = autosave.clone();
+    add.connect_clicked(glib::clone!(
+        #[weak]
+        multipart_box,
+        #[weak]
+        multipart_rows,
+        #[weak]
+        window,
+        #[weak]
+        autosave,
         move |_| {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
             add_multipart_row(&multipart_box, &multipart_rows, &window, &autosave);
             request_autosave(&autosave);
         }
-    });
+    ));
     multipart_panel.append(&multipart_box);
     multipart_panel.append(&add);
     let multipart_scroll = scrolled(&multipart_panel);
@@ -376,13 +389,19 @@ pub(super) fn build_body_page(
     multipart_scroll.set_min_content_height(150);
     multipart_scroll.set_visible(false);
 
-    mode.connect_selected_notify({
-        let json_panel = json_panel.clone();
-        let xml_panel = xml_panel.clone();
-        let text_panel = text_panel.clone();
-        let form_scroll = form_scroll.clone();
-        let multipart_scroll = multipart_scroll.clone();
-        let autosave = autosave.clone();
+    mode.connect_selected_notify(glib::clone!(
+        #[weak]
+        json_panel,
+        #[weak]
+        xml_panel,
+        #[weak]
+        text_panel,
+        #[weak]
+        form_scroll,
+        #[weak]
+        multipart_scroll,
+        #[weak]
+        autosave,
         move |mode| {
             json_panel.set_visible(mode.selected() == BODY_MODE_JSON);
             xml_panel.set_visible(mode.selected() == BODY_MODE_XML);
@@ -391,7 +410,7 @@ pub(super) fn build_body_page(
             multipart_scroll.set_visible(mode.selected() == BODY_MODE_MULTIPART);
             request_autosave(&autosave);
         }
-    });
+    ));
     page.append(&mode);
     page.append(&json_panel);
     page.append(&xml_panel);
@@ -548,19 +567,29 @@ fn configure_editor_style_scheme(buffer: &sourceview5::Buffer) {
         return;
     };
     apply_editor_style_scheme(buffer, &settings);
-    settings.connect_gtk_application_prefer_dark_theme_notify({
-        let buffer = buffer.downgrade();
-        move |settings| {
-            if let Some(buffer) = buffer.upgrade() {
+    let dark_theme_handler =
+        settings.connect_gtk_application_prefer_dark_theme_notify(glib::clone!(
+            #[weak]
+            buffer,
+            move |settings| {
                 apply_editor_style_scheme(&buffer, settings);
             }
-        }
-    });
-    settings.connect_gtk_theme_name_notify({
-        let buffer = buffer.downgrade();
+        ));
+    let theme_name_handler = settings.connect_gtk_theme_name_notify(glib::clone!(
+        #[weak]
+        buffer,
         move |settings| {
-            if let Some(buffer) = buffer.upgrade() {
-                apply_editor_style_scheme(&buffer, settings);
+            apply_editor_style_scheme(&buffer, settings);
+        }
+    ));
+    // Settings outlives every window. Remove its callbacks when their buffer
+    // goes away so even weak-reference closures do not accumulate across windows.
+    buffer.add_weak_ref_notify_local({
+        let settings = settings.downgrade();
+        move || {
+            if let Some(settings) = settings.upgrade() {
+                settings.disconnect(dark_theme_handler);
+                settings.disconnect(theme_name_handler);
             }
         }
     });
@@ -616,10 +645,11 @@ pub(super) fn add_form_urlencoded_row(
     value.add_css_class("monospace");
     autosave_on_blur(&name, autosave);
     autosave_on_blur(&value, autosave);
-    enabled.connect_toggled({
-        let autosave = autosave.clone();
+    enabled.connect_toggled(glib::clone!(
+        #[weak]
+        autosave,
         move |_| request_autosave(&autosave)
-    });
+    ));
 
     row.append(&enabled);
     row.append(&name);
@@ -632,17 +662,16 @@ pub(super) fn add_form_urlencoded_row(
         name,
         value,
     });
-    remove.connect_clicked({
-        let container = container.downgrade();
-        let rows = Rc::downgrade(rows);
-        let row = row.downgrade();
-        let autosave = autosave.clone();
+    remove.connect_clicked(glib::clone!(
+        #[weak]
+        container,
+        #[weak]
+        rows,
+        #[weak]
+        row,
+        #[weak]
+        autosave,
         move |_| {
-            let (Some(container), Some(rows), Some(row)) =
-                (container.upgrade(), rows.upgrade(), row.upgrade())
-            else {
-                return;
-            };
             let index = {
                 let rows = rows.borrow();
                 rows.iter().position(|item| item.row == row)
@@ -653,7 +682,7 @@ pub(super) fn add_form_urlencoded_row(
                 request_autosave(&autosave);
             }
         }
-    });
+    ));
 }
 
 pub(super) fn add_multipart_row(
@@ -693,46 +722,58 @@ pub(super) fn add_multipart_row(
     value.add_css_class("monospace");
     autosave_on_blur(&name, autosave);
     autosave_on_blur(&value, autosave);
-    enabled.connect_toggled({
-        let autosave = autosave.clone();
+    enabled.connect_toggled(glib::clone!(
+        #[weak]
+        autosave,
         move |_| request_autosave(&autosave)
-    });
+    ));
 
-    kind.connect_selected_notify({
-        let value = value.clone();
-        let browse = browse.clone();
-        let autosave = autosave.clone();
+    kind.connect_selected_notify(glib::clone!(
+        #[weak]
+        value,
+        #[weak]
+        browse,
+        #[weak]
+        autosave,
         move |kind| {
             let is_file = kind.selected() == 1;
             value.set_placeholder_text(Some(if is_file { "File path" } else { "Text value" }));
             browse.set_visible(is_file);
             request_autosave(&autosave);
         }
-    });
-    browse.connect_clicked({
-        let value = value.clone();
-        let window = window.downgrade();
-        let autosave = autosave.clone();
+    ));
+    browse.connect_clicked(glib::clone!(
+        #[weak]
+        value,
+        #[weak]
+        window,
+        #[weak]
+        autosave,
         move |_| {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
             let dialog = FileDialog::builder()
                 .title("Choose multipart file")
                 .modal(true)
                 .build();
-            let value = value.clone();
-            let autosave = autosave.clone();
-            dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
-                if let Ok(file) = result
-                    && let Some(path) = file.path()
-                {
-                    value.set_text(&path.to_string_lossy());
-                    request_autosave(&autosave);
-                }
-            });
+            dialog.open(
+                Some(&window),
+                None::<&gio::Cancellable>,
+                glib::clone!(
+                    #[weak]
+                    value,
+                    #[weak]
+                    autosave,
+                    move |result| {
+                        if let Ok(file) = result
+                            && let Some(path) = file.path()
+                        {
+                            value.set_text(&path.to_string_lossy());
+                            request_autosave(&autosave);
+                        }
+                    }
+                ),
+            );
         }
-    });
+    ));
 
     row.append(&enabled);
     row.append(&name);
@@ -748,17 +789,16 @@ pub(super) fn add_multipart_row(
         kind,
         value,
     });
-    remove.connect_clicked({
-        let container = container.downgrade();
-        let rows = Rc::downgrade(rows);
-        let row = row.downgrade();
-        let autosave = autosave.clone();
+    remove.connect_clicked(glib::clone!(
+        #[weak]
+        container,
+        #[weak]
+        rows,
+        #[weak]
+        row,
+        #[weak]
+        autosave,
         move |_| {
-            let (Some(container), Some(rows), Some(row)) =
-                (container.upgrade(), rows.upgrade(), row.upgrade())
-            else {
-                return;
-            };
             let index = {
                 let rows = rows.borrow();
                 rows.iter().position(|item| item.row == row)
@@ -769,7 +809,7 @@ pub(super) fn add_multipart_row(
                 request_autosave(&autosave);
             }
         }
-    });
+    ));
 }
 
 pub(super) fn readonly_text_view() -> TextView {
@@ -850,10 +890,13 @@ pub(super) fn build_source_viewer() -> SourceViewerWidgets {
         .child(&search_controls)
         .build();
 
-    search_entry.connect_search_changed({
-        let search_settings = search_settings.clone();
-        let search_context = search_context.clone();
-        let view = view.clone();
+    search_entry.connect_search_changed(glib::clone!(
+        #[weak]
+        search_settings,
+        #[weak]
+        search_context,
+        #[weak]
+        view,
         move |entry| {
             let text = entry.text();
             search_settings.set_search_text((!text.is_empty()).then_some(text.as_str()));
@@ -864,44 +907,81 @@ pub(super) fn build_source_viewer() -> SourceViewerWidgets {
                 entry.add_css_class("error");
             }
         }
-    });
-    search_entry.connect_activate({
-        let search_context = search_context.clone();
-        let view = view.clone();
-        move |_| select_search_match(&view, &search_context, true)
-    });
-    search_entry.connect_next_match({
-        let search_context = search_context.clone();
-        let view = view.clone();
-        move |_| select_search_match(&view, &search_context, true)
-    });
-    search_entry.connect_previous_match({
-        let search_context = search_context.clone();
-        let view = view.clone();
-        move |_| select_search_match(&view, &search_context, false)
-    });
-    previous.connect_clicked({
-        let search_context = search_context.clone();
-        let view = view.clone();
-        move |_| select_search_match(&view, &search_context, false)
-    });
-    next.connect_clicked({
-        let search_context = search_context.clone();
-        let view = view.clone();
-        move |_| select_search_match(&view, &search_context, true)
-    });
+    ));
+    search_entry.connect_activate(glib::clone!(
+        #[weak]
+        search_context,
+        #[weak]
+        view,
+        move |_| {
+            select_search_match(&view, &search_context, true);
+        }
+    ));
+    search_entry.connect_next_match(glib::clone!(
+        #[weak]
+        search_context,
+        #[weak]
+        view,
+        move |_| {
+            select_search_match(&view, &search_context, true);
+        }
+    ));
+    search_entry.connect_previous_match(glib::clone!(
+        #[weak]
+        search_context,
+        #[weak]
+        view,
+        move |_| {
+            select_search_match(&view, &search_context, false);
+        }
+    ));
+    previous.connect_clicked(glib::clone!(
+        #[weak]
+        search_context,
+        #[weak]
+        view,
+        move |_| {
+            select_search_match(&view, &search_context, false);
+        }
+    ));
+    next.connect_clicked(glib::clone!(
+        #[weak]
+        search_context,
+        #[weak]
+        view,
+        move |_| {
+            select_search_match(&view, &search_context, true);
+        }
+    ));
     search_entry.connect_stop_search({
-        let search_revealer = search_revealer.clone();
-        let search_settings = search_settings.clone();
-        let view = view.clone();
-        move |entry| close_source_search(&search_revealer, entry, &search_settings, &view)
+        let search_revealer = search_revealer.downgrade();
+        let search_settings = search_settings.downgrade();
+        let view = view.downgrade();
+        move |entry| {
+            if let (Some(revealer), Some(view), Some(search_settings)) = (
+                search_revealer.upgrade(),
+                view.upgrade(),
+                search_settings.upgrade(),
+            ) {
+                close_source_search(&revealer, entry, &search_settings, &view);
+            }
+        }
     });
     close.connect_clicked({
-        let search_revealer = search_revealer.clone();
-        let search_entry = search_entry.clone();
-        let search_settings = search_settings.clone();
-        let view = view.clone();
-        move |_| close_source_search(&search_revealer, &search_entry, &search_settings, &view)
+        let search_revealer = search_revealer.downgrade();
+        let search_entry = search_entry.downgrade();
+        let search_settings = search_settings.downgrade();
+        let view = view.downgrade();
+        move |_| {
+            if let (Some(revealer), Some(entry), Some(view), Some(search_settings)) = (
+                search_revealer.upgrade(),
+                search_entry.upgrade(),
+                view.upgrade(),
+                search_settings.upgrade(),
+            ) {
+                close_source_search(&revealer, &entry, &search_settings, &view);
+            }
+        }
     });
 
     let previous_shortcuts = gtk::ShortcutController::new();
@@ -911,10 +991,14 @@ pub(super) fn build_source_viewer() -> SourceViewerWidgets {
                 .expect("valid Shift+Enter shortcut"),
         ),
         Some(gtk::CallbackAction::new({
-            let search_context = search_context.clone();
-            let view = view.clone();
+            let search_context = search_context.downgrade();
+            let view = view.downgrade();
             move |_, _| {
-                select_search_match(&view, &search_context, false);
+                if let (Some(view), Some(search_context)) =
+                    (view.upgrade(), search_context.upgrade())
+                {
+                    select_search_match(&view, &search_context, false);
+                }
                 glib::Propagation::Stop
             }
         })),
@@ -925,11 +1009,15 @@ pub(super) fn build_source_viewer() -> SourceViewerWidgets {
     find_shortcuts.add_shortcut(gtk::Shortcut::new(
         Some(gtk::ShortcutTrigger::parse_string("<Control>f").expect("valid Ctrl+F shortcut")),
         Some(gtk::CallbackAction::new({
-            let search_revealer = search_revealer.clone();
-            let search_entry = search_entry.clone();
+            let search_revealer = search_revealer.downgrade();
+            let search_entry = search_entry.downgrade();
             move |_, _| {
-                search_revealer.set_reveal_child(true);
-                search_entry.grab_focus();
+                if let (Some(revealer), Some(entry)) =
+                    (search_revealer.upgrade(), search_entry.upgrade())
+                {
+                    revealer.set_reveal_child(true);
+                    entry.grab_focus();
+                }
                 glib::Propagation::Stop
             }
         })),
@@ -949,7 +1037,7 @@ pub(super) fn build_source_viewer() -> SourceViewerWidgets {
         view,
         search_revealer,
         search_entry,
-        search_settings,
+        search_context,
     }
 }
 
