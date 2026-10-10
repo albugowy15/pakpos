@@ -7,10 +7,10 @@ use std::{
     cell::{Cell, RefCell},
     collections::BTreeSet,
     rc::Rc,
-    time::Duration,
 };
 
 use gtk::{gio, glib, prelude::*};
+use pakpos::config::FOLD_REFRESH_DELAY;
 use sourceview5::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,7 +242,7 @@ impl Folding {
         }
         let weak = Rc::downgrade(self);
         *self.refresh.borrow_mut() = Some(glib::timeout_add_local_once(
-            Duration::from_millis(150),
+            FOLD_REFRESH_DELAY,
             move || {
                 if let Some(folding) = weak.upgrade() {
                     folding.refresh.borrow_mut().take();

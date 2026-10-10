@@ -17,6 +17,7 @@ use gtk::{
     SelectionMode, StringList, Widget, gdk, gio, glib, prelude::*,
 };
 use pakpos::app::{Action, DeferredAction, EffectOutput};
+use pakpos::config::AUTOSAVE_POLL_INTERVAL;
 use uuid::Uuid;
 
 use super::dialogs::{confirm_delete_request, show_rename_request_dialog};
@@ -287,7 +288,7 @@ pub(super) fn setup_collection_actions(
             }
         }
     })));
-    glib::timeout_add_local(std::time::Duration::from_millis(30), {
+    glib::timeout_add_local(AUTOSAVE_POLL_INTERVAL, {
         let state = state.clone();
         let sidebar = Rc::downgrade(sidebar);
         let editor = Rc::downgrade(editor);

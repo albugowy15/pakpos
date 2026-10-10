@@ -16,9 +16,10 @@ use gtk::{
     EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, SearchEntry,
     TextView, gio, glib, prelude::*,
 };
-use pakpos::models::{
-    FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
+use pakpos::config::{
+    EDITOR_INDENT_WIDTH, EDITOR_MAX_UNDO_LEVELS, EDITOR_TAB_WIDTH, SUPPORTED_METHODS,
 };
+use pakpos::models::{FormField, HeaderRow, MultipartField, MultipartValue, Request, RequestBody};
 use pakpos::net::ResponseData;
 use sourceview5::prelude::{BufferExt, SearchSettingsExt};
 
@@ -398,14 +399,14 @@ fn build_request_source_editor(
             .build(),
         None => buffer_builder.highlight_syntax(false).build(),
     };
-    buffer.set_max_undo_levels(100);
+    buffer.set_max_undo_levels(EDITOR_MAX_UNDO_LEVELS);
     configure_editor_style_scheme(&buffer);
     let editor = sourceview5::View::builder()
         .buffer(&buffer)
         .auto_indent(true)
         .indent_on_tab(true)
-        .indent_width(2)
-        .tab_width(2)
+        .indent_width(EDITOR_INDENT_WIDTH)
+        .tab_width(EDITOR_TAB_WIDTH)
         .insert_spaces_instead_of_tabs(true)
         .monospace(true)
         .show_line_numbers(true)
@@ -940,7 +941,7 @@ fn set_source_text(view: &sourceview5::View, text: &str) {
     buffer.set_enable_undo(false);
     buffer.set_text(text);
     buffer.set_enable_undo(true);
-    buffer.set_max_undo_levels(100);
+    buffer.set_max_undo_levels(EDITOR_MAX_UNDO_LEVELS);
 }
 
 pub(super) fn collect_request(
@@ -949,9 +950,9 @@ pub(super) fn collect_request(
     header_rows: &Rc<RefCell<Vec<HeaderWidgets>>>,
     body_widgets: &BodyWidgets,
 ) -> Result<Request, String> {
-    let method = HttpMethod::ALL
+    let method = SUPPORTED_METHODS
         .get(method.selected() as usize)
-        .copied()
+        .cloned()
         .ok_or_else(|| "Select a request method.".to_owned())?;
     let headers = header_rows
         .borrow()
@@ -1013,7 +1014,7 @@ pub(super) fn apply_request(
     header_rows: &Rc<RefCell<Vec<HeaderWidgets>>>,
     body_widgets: &BodyWidgets,
 ) {
-    let method_index = HttpMethod::ALL
+    let method_index = SUPPORTED_METHODS
         .iter()
         .position(|value| *value == request.method)
         .unwrap_or_default();

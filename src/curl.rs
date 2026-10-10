@@ -16,7 +16,8 @@ use std::{
 };
 
 use crate::models::{
-    FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
+    FormField, HeaderRow, Method, MultipartField, MultipartValue, Request, RequestBody,
+    parse_supported_method,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,7 +210,7 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
                 json_option = true;
                 data_parts.push(parse_inline_data(value, argument)?);
             }
-            "-I" | "--head" => method = Some(HttpMethod::Head),
+            "-I" | "--head" => method = Some(Method::HEAD),
             "-L" | "--location" => warnings.push(
                 "Ignored --location; Pakpos displays redirect responses without following them."
                     .to_owned(),
@@ -312,9 +313,9 @@ pub fn from_command(command: &str) -> Result<CurlImport, CurlError> {
     };
 
     let inferred_method = if matches!(body, RequestBody::None) {
-        HttpMethod::Get
+        Method::GET
     } else {
-        HttpMethod::Post
+        Method::POST
     };
     let request = Request {
         method: method.unwrap_or(inferred_method),
@@ -347,10 +348,8 @@ fn next_value<'a>(
         .ok_or_else(|| CurlError::new(format!("The {option} option needs a value.")))
 }
 
-fn parse_method(value: &str) -> Result<HttpMethod, CurlError> {
-    value
-        .to_ascii_uppercase()
-        .parse()
+fn parse_method(value: &str) -> Result<Method, CurlError> {
+    parse_supported_method(&value.to_ascii_uppercase())
         .map_err(|_| CurlError::new(format!("Pakpos does not support the {value} method.")))
 }
 
@@ -558,13 +557,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_methods_keep_supported_values_and_case_normalization() {
+        assert_eq!(parse_method("post").unwrap(), Method::POST);
+        for value in ["OPTIONS", "CONNECT", "TRACE", "PROPFIND", "GET\n"] {
+            assert!(parse_method(value).is_err());
+        }
+    }
+
+    #[test]
     fn imports_postman_style_json_command() {
         let imported = from_command(
             r#"curl --location 'https://example.com/items?b=2&a=1' --header 'Authorization: Bearer secret' --header 'X-Tag: one' --header 'X-Tag: two' --data-raw '{"name":"Pakpos"}'"#,
         )
         .unwrap();
 
-        assert_eq!(imported.request.method, HttpMethod::Post);
+        assert_eq!(imported.request.method, Method::POST);
         assert_eq!(imported.request.url, "https://example.com/items?b=2&a=1");
         assert_eq!(imported.request.headers.len(), 3);
         assert_eq!(
@@ -580,7 +587,7 @@ mod tests {
             "$ curl -XPATCH -H'Content-Type: application/json' -d'42' https://example.com",
         )
         .unwrap();
-        assert_eq!(imported.request.method, HttpMethod::Patch);
+        assert_eq!(imported.request.method, Method::PATCH);
         assert_eq!(imported.request.body, RequestBody::Json("42".to_owned()));
     }
 
@@ -592,7 +599,7 @@ mod tests {
              --data-binary '{"ok":true}'"#,
         )
         .unwrap();
-        assert_eq!(imported.request.method, HttpMethod::Post);
+        assert_eq!(imported.request.method, Method::POST);
         assert_eq!(
             imported.request.body,
             RequestBody::Json("{\"ok\":true}".to_owned())
@@ -602,7 +609,7 @@ mod tests {
     #[test]
     fn round_trips_quotes_newlines_and_duplicate_headers() {
         let request = Request {
-            method: HttpMethod::Put,
+            method: Method::PUT,
             url: "https://example.com/people?name=O'Reilly".to_owned(),
             headers: vec![
                 HeaderRow::enabled("X-Tag", "one"),
@@ -631,7 +638,7 @@ mod tests {
     #[test]
     fn json_option_adds_curl_default_headers() {
         let imported = from_command("curl --json '{}' https://example.com").unwrap();
-        assert_eq!(imported.request.method, HttpMethod::Post);
+        assert_eq!(imported.request.method, Method::POST);
         assert_eq!(imported.request.headers.len(), 2);
         assert_eq!(imported.request.headers[0].name, "Content-Type");
         assert_eq!(imported.request.headers[1].name, "Accept");
@@ -686,7 +693,7 @@ mod tests {
             ),
         ] {
             let command = to_command(Request {
-                method: HttpMethod::Post,
+                method: Method::POST,
                 url: "https://example.com".to_owned(),
                 body,
                 ..Request::default()
@@ -699,7 +706,7 @@ mod tests {
     #[test]
     fn exports_empty_header_with_curl_empty_value_syntax() {
         let request = Request {
-            method: HttpMethod::Get,
+            method: Method::GET,
             url: "https://example.com".to_owned(),
             headers: vec![HeaderRow::enabled("X-Empty", "")],
             body: RequestBody::None,
@@ -714,7 +721,7 @@ mod tests {
     fn round_trips_multipart_text_and_file_fields() {
         let file_path = std::env::current_dir().unwrap().join("Cargo.toml");
         let request = Request {
-            method: HttpMethod::Patch,
+            method: Method::PATCH,
             url: "https://example.com/upload".to_owned(),
             headers: Vec::new(),
             body: RequestBody::Multipart(vec![
@@ -754,7 +761,7 @@ mod tests {
             std::env::temp_dir().join(format!("pakpos-curl;review-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&file_path, b"review fixture").unwrap();
         let request = Request {
-            method: HttpMethod::Post,
+            method: Method::POST,
             url: "https://example.com/upload".to_owned(),
             headers: Vec::new(),
             body: RequestBody::Multipart(vec![MultipartField::file("asset", &file_path)]),

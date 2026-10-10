@@ -10,84 +10,37 @@
 //! formatting survives round trips and JSON validation does not require a second
 //! payload-sized copy.
 
-use std::{fmt, path::PathBuf, str::FromStr, time::Duration};
+use std::{fmt, path::PathBuf};
 
+pub use reqwest::Method;
 use reqwest::{
-    Method, Url,
+    Url,
     header::{HeaderName, HeaderValue},
 };
 use serde::{Deserialize, Serialize};
 
-pub const RESPONSE_PREVIEW_LIMIT: usize = 5 * 1024 * 1024;
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+use crate::config::SUPPORTED_METHODS;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum HttpMethod {
-    #[default]
-    Get,
-    Post,
-    Put,
-    Patch,
-    Delete,
-    Head,
+pub fn parse_supported_method(value: &str) -> Result<Method, ValidationError> {
+    value
+        .parse::<Method>()
+        .ok()
+        .filter(|method| SUPPORTED_METHODS.contains(method))
+        .ok_or_else(|| ValidationError::UnsupportedMethod(value.to_owned()))
 }
 
-impl HttpMethod {
-    pub const ALL: [Self; 6] = [
-        Self::Get,
-        Self::Post,
-        Self::Put,
-        Self::Patch,
-        Self::Delete,
-        Self::Head,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Get => "GET",
-            Self::Post => "POST",
-            Self::Put => "PUT",
-            Self::Patch => "PATCH",
-            Self::Delete => "DELETE",
-            Self::Head => "HEAD",
-        }
-    }
+fn serialize_method<S: serde::Serializer>(
+    method: &Method,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(method.as_str())
 }
 
-impl fmt::Display for HttpMethod {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for HttpMethod {
-    type Err = ValidationError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "GET" => Ok(Self::Get),
-            "POST" => Ok(Self::Post),
-            "PUT" => Ok(Self::Put),
-            "PATCH" => Ok(Self::Patch),
-            "DELETE" => Ok(Self::Delete),
-            "HEAD" => Ok(Self::Head),
-            _ => Err(ValidationError::UnsupportedMethod(value.to_owned())),
-        }
-    }
-}
-
-impl From<HttpMethod> for Method {
-    fn from(value: HttpMethod) -> Self {
-        match value {
-            HttpMethod::Get => Self::GET,
-            HttpMethod::Post => Self::POST,
-            HttpMethod::Put => Self::PUT,
-            HttpMethod::Patch => Self::PATCH,
-            HttpMethod::Delete => Self::DELETE,
-            HttpMethod::Head => Self::HEAD,
-        }
-    }
+fn deserialize_method<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Method, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    parse_supported_method(&value).map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +140,11 @@ impl MultipartField {
 /// A request as edited and persisted by Pakpos.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
-    pub method: HttpMethod,
+    #[serde(
+        serialize_with = "serialize_method",
+        deserialize_with = "deserialize_method"
+    )]
+    pub method: Method,
     pub url: String,
     pub headers: Vec<HeaderRow>,
     pub body: RequestBody,
@@ -214,6 +171,9 @@ impl Request {
     }
 
     pub(crate) fn check(&self, validate_files: bool) -> Result<(), ValidationError> {
+        if !SUPPORTED_METHODS.contains(&self.method) {
+            return Err(ValidationError::UnsupportedMethod(self.method.to_string()));
+        }
         let entered_url = self.url.trim();
         if entered_url.is_empty() {
             return Err(ValidationError::MissingUrl);
@@ -467,6 +427,50 @@ impl std::error::Error for ValidationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_methods_keep_the_uppercase_string_serialization() {
+        assert_eq!(Request::default().method, Method::GET);
+        for method in &SUPPORTED_METHODS {
+            let request = Request {
+                method: method.clone(),
+                ..Request::default()
+            };
+            let value = serde_json::to_value(&request).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "method": method.as_str(), "url": "", "headers": [], "body": { "mode": "none" }
+                })
+            );
+            assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
+            assert_eq!(parse_supported_method(method.as_str()).unwrap(), *method);
+        }
+    }
+
+    #[test]
+    fn unsupported_and_malformed_methods_are_rejected_at_input_boundaries() {
+        for value in [
+            "OPTIONS", "CONNECT", "TRACE", "QUERY", "PROPFIND", "get", "", "GET\n",
+        ] {
+            assert_eq!(
+                parse_supported_method(value),
+                Err(ValidationError::UnsupportedMethod(value.into()))
+            );
+            let mut serialized = serde_json::to_value(Request::default()).unwrap();
+            serialized["method"] = value.into();
+            assert!(serde_json::from_value::<Request>(serialized).is_err());
+        }
+        let request = Request {
+            method: Method::OPTIONS,
+            url: "https://example.com".into(),
+            ..Request::default()
+        };
+        assert_eq!(
+            request.validated(),
+            Err(ValidationError::UnsupportedMethod("OPTIONS".into()))
+        );
+    }
 
     fn temporary_file(contents: &[u8]) -> PathBuf {
         let path = std::env::temp_dir().join(format!("pakpos-model-test-{}", uuid::Uuid::new_v4()));

@@ -26,7 +26,7 @@ use gtk::{
 use pakpos::{
     app::{Action, AppEvent, AppState, DeferredAction, Effect, EffectOutput},
     collections::CollectionSummary,
-    models::HttpMethod,
+    config::SUPPORTED_METHODS,
 };
 
 use crate::runtime::EffectRunner;
@@ -200,7 +200,7 @@ pub fn build(application: &Application) {
         .orientation(Orientation::Horizontal)
         .spacing(4)
         .build();
-    let method_labels = HttpMethod::ALL.map(HttpMethod::as_str);
+    let method_labels = SUPPORTED_METHODS.each_ref().map(|method| method.as_str());
     let method = DropDown::from_strings(&method_labels);
     method.set_tooltip_text(Some("HTTP request method"));
     set_accessible_label(&method, "HTTP request method");

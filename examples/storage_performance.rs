@@ -13,7 +13,7 @@ use std::{
 
 use pakpos::{
     collections::{CollectionRequest, CollectionSummary},
-    models::{HeaderRow, HttpMethod, Request, RequestBody},
+    models::{HeaderRow, Method, Request, RequestBody},
     storage::{CollectionStore, StorageError},
 };
 use uuid::Uuid;
@@ -217,7 +217,7 @@ impl Fixture {
                     format!("Request {index:04}"),
                     index as u32,
                     Request {
-                        method: HttpMethod::Post,
+                        method: Method::POST,
                         url: format!("https://example.invalid/items/{index}"),
                         headers: vec![
                             HeaderRow::enabled("Accept", "application/json"),

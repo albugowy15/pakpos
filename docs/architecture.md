@@ -10,6 +10,10 @@ GTK views -> application actions/state -> effects -> runtime adapters
                     domain models              SQLite / HTTP
 ```
 
+Shared compile-time defaults live in `src/config.rs`, including request and
+preview limits, supported methods, SQLite lock waits, editor settings, and UI
+timer intervals. Adapters import those values rather than repeating literals.
+
 ## Application layer
 
 `src/app` is GTK-independent. `AppState::update` accepts typed `Action` values,

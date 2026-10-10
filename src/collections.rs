@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::models::{HttpMethod, Request};
+use crate::models::{Method, Request};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectionSummary {
@@ -38,7 +38,7 @@ pub struct CollectionNode {
     pub name: String,
     pub position: u32,
     /// Request method metadata used by the sidebar without loading request bodies.
-    pub method: Option<HttpMethod>,
+    pub method: Option<Method>,
 }
 
 impl PartialEq for CollectionNode {

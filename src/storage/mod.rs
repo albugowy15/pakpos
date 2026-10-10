@@ -19,7 +19,6 @@ use std::{
         fs::{OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
-    str::FromStr,
     time::Duration,
 };
 
@@ -35,13 +34,13 @@ use rusqlite::trace::{TraceEvent, TraceEventCodes};
 
 use crate::{
     collections::{CollectionNode, CollectionRequest, CollectionSummary},
+    config::STORAGE_BUSY_TIMEOUT,
     models::{
-        FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
+        FormField, HeaderRow, Method, MultipartField, MultipartValue, Request, RequestBody,
+        parse_supported_method,
     },
     response::{ResponseBody, ResponseData, ResponseHeader, ResponseTextKind},
 };
-
-const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(feature = "storage-profiling")]
 thread_local! {
@@ -128,7 +127,7 @@ impl CollectionStore {
         let path = path.as_ref();
         let mut connection = Connection::open(path).map_err(StorageError::Database)?;
         connection
-            .busy_timeout(BUSY_TIMEOUT)
+            .busy_timeout(STORAGE_BUSY_TIMEOUT)
             .map_err(StorageError::Database)?;
         connection
             .pragma_update(None, "foreign_keys", "ON")
@@ -344,7 +343,7 @@ impl CollectionStore {
                 collection_id: parse_uuid(&collection_id)?,
                 name,
                 position,
-                method: Some(method),
+                method: Some(method.clone()),
             },
             request: Request {
                 method,
@@ -919,8 +918,8 @@ fn save_request(
     Ok(())
 }
 
-fn parse_http_method(value: &str) -> Result<HttpMethod, StorageError> {
-    HttpMethod::from_str(value).map_err(|error| StorageError::InvalidData {
+fn parse_http_method(value: &str) -> Result<Method, StorageError> {
+    parse_supported_method(value).map_err(|error| StorageError::InvalidData {
         message: error.to_string(),
     })
 }

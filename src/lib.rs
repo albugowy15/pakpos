@@ -11,6 +11,7 @@
 
 pub mod app;
 pub mod collections;
+pub mod config;
 pub mod curl;
 pub mod models;
 pub mod net;

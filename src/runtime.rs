@@ -26,6 +26,7 @@ use std::{
 use gtk::glib;
 use pakpos::{
     app::{CollectionList, Effect, EffectOutput, PostmanImport},
+    config::BACKGROUND_POLL_INTERVAL,
     net::execute,
     postman,
     storage::CollectionStore,
@@ -357,7 +358,7 @@ fn run_background<T: Send + 'static>(
         let _ = sender.send(task());
     });
     let mut complete = Some(complete);
-    glib::timeout_add_local(std::time::Duration::from_millis(30), move || {
+    glib::timeout_add_local(BACKGROUND_POLL_INTERVAL, move || {
         let result = match receiver.try_recv() {
             Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,

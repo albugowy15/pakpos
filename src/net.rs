@@ -21,7 +21,8 @@ use reqwest::{
 };
 use tokio::sync::oneshot;
 
-use crate::models::{MultipartValue, REQUEST_TIMEOUT, Request, RequestBody, ValidationError};
+use crate::config::REQUEST_TIMEOUT;
+use crate::models::{MultipartValue, Request, RequestBody, ValidationError};
 use crate::response::{ResponseBodyCollector, system_download_directory};
 pub use crate::response::{ResponseData, ResponseHeader};
 
@@ -40,7 +41,11 @@ impl fmt::Display for RequestError {
         match self {
             Self::Validation(error) => error.fmt(formatter),
             Self::Cancelled => formatter.write_str("Request cancelled."),
-            Self::Timeout => formatter.write_str("The request timed out after 30 seconds."),
+            Self::Timeout => write!(
+                formatter,
+                "The request timed out after {} seconds.",
+                REQUEST_TIMEOUT.as_secs()
+            ),
             Self::InvalidHeader { name, reason } => {
                 write!(formatter, "Header ‘{name}’ could not be sent: {reason}.")
             }
@@ -112,9 +117,7 @@ async fn execute_inner(
         headers.append(name, value);
     }
 
-    let mut outbound = client
-        .request(request.method.into(), request.url)
-        .headers(headers);
+    let mut outbound = client.request(request.method, request.url).headers(headers);
     match request.body {
         RequestBody::None => {}
         RequestBody::Json(body) => {
@@ -218,7 +221,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::models::{HeaderRow, HttpMethod, Request, RequestBody};
+    use crate::models::{HeaderRow, Method, Request, RequestBody};
     use crate::response::{ResponseBody, ResponseTextKind};
 
     fn response(preview: Vec<u8>, content_type: Option<&str>) -> ResponseData {
@@ -311,7 +314,7 @@ mod tests {
         });
 
         let request = Request {
-            method: HttpMethod::Post,
+            method: Method::POST,
             url: format!("http://{address}/items?b=2&a=1"),
             headers: vec![
                 HeaderRow::enabled("X-Tag", "first"),
@@ -397,7 +400,7 @@ mod tests {
             });
 
             let request = Request {
-                method: HttpMethod::Post,
+                method: Method::POST,
                 url: format!("http://{address}/submit"),
                 body,
                 ..Request::default()
@@ -461,7 +464,7 @@ mod tests {
         });
 
         let request = Request {
-            method: HttpMethod::Post,
+            method: Method::POST,
             url: format!("http://{address}/upload"),
             headers: Vec::new(),
             body: RequestBody::Multipart(vec![

@@ -8,8 +8,7 @@ mod runtime;
 mod ui;
 
 use gtk::{Application, gio, prelude::*};
-
-const APPLICATION_ID: &str = "com.bughowi.Pakpos";
+use pakpos::config::APPLICATION_ID;
 
 fn main() -> gtk::glib::ExitCode {
     let application = Application::builder()

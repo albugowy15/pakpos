@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     collections::{CollectionNode, CollectionRequest, CollectionSummary},
-    models::{HttpMethod, Request},
+    models::{Method, Request},
 };
 
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ pub struct RequestListItem<'a> {
     pub id: Uuid,
     pub name: &'a str,
     pub position: u32,
-    pub method: HttpMethod,
+    pub method: &'a Method,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,9 +154,9 @@ impl CollectionSession {
             method: request
                 .request
                 .as_ref()
-                .map(|request| request.method)
-                .or(request.node.method)
-                .unwrap_or_default(),
+                .map(|request| &request.method)
+                .or(request.node.method.as_ref())
+                .unwrap_or(&Method::GET),
         })
     }
 
@@ -177,7 +177,7 @@ impl CollectionSession {
         {
             // Reuse the saved allocation when an edit is reverted, and keep the
             // existing allocation when GTK captures an unchanged editor.
-            entry.node.method = Some(request.method);
+            entry.node.method = Some(request.method.clone());
             if entry.request.as_deref() == Some(&request) {
                 return;
             }
@@ -213,7 +213,7 @@ impl CollectionSession {
         if !request.node_is_dirty() {
             request.node = loaded.node.clone();
         }
-        request.node.method = Some(loaded.request.method);
+        request.node.method = Some(loaded.request.method.clone());
         request.saved_node = Some(loaded.node);
         request.request = Some(loaded.request.clone());
         request.saved_request = Some(loaded.request);
@@ -360,7 +360,7 @@ impl CollectionSession {
             if Some(entry.node.id) != self.active_request && !entry.request_is_dirty() {
                 // Method metadata must survive eviction for the sidebar.
                 if let Some(request) = &entry.request {
-                    entry.node.method = Some(request.method);
+                    entry.node.method = Some(request.method.clone());
                 }
                 entry.request = None;
                 entry.saved_request = None;
@@ -431,10 +431,10 @@ mod tests {
                 .find(|item| item.id == first)
                 .unwrap()
                 .method,
-            HttpMethod::Get
+            Method::GET
         );
         session.capture_active(Request {
-            method: HttpMethod::Post,
+            method: Method::POST,
             url: "https://example.com".into(),
             ..Request::default()
         });
@@ -452,7 +452,7 @@ mod tests {
                 .find(|item| item.id == second)
                 .unwrap()
                 .method,
-            HttpMethod::Post
+            Method::POST
         );
         assert!(!session.is_dirty());
     }

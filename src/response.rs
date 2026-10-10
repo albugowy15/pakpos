@@ -24,7 +24,7 @@ use percent_encoding::percent_decode_str;
 use reqwest::Url;
 use uuid::Uuid;
 
-use crate::models::RESPONSE_PREVIEW_LIMIT;
+use crate::config::{DOWNLOAD_FILENAME_BYTE_BUDGET, RESPONSE_PREVIEW_LIMIT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseTextKind {
@@ -129,7 +129,13 @@ impl ResponseData {
                 };
 
                 if *truncated {
-                    append_notice(displayed.to_mut(), "Preview stopped at 5 MiB");
+                    append_notice(
+                        displayed.to_mut(),
+                        &format!(
+                            "Preview stopped at {} MiB",
+                            RESPONSE_PREVIEW_LIMIT as f64 / (1024.0 * 1024.0)
+                        ),
+                    );
                 }
                 if let Some(path) = saved_path {
                     append_notice(
@@ -586,9 +592,9 @@ fn filename_from_content_disposition(value: &str) -> Option<String> {
 
 fn sanitize_filename(value: &str) -> String {
     let leaf = value.rsplit(['/', '\\']).next().unwrap_or(value);
-    let mut safe = String::with_capacity(leaf.len().min(180));
+    let mut safe = String::with_capacity(leaf.len().min(DOWNLOAD_FILENAME_BYTE_BUDGET));
     for character in leaf.chars() {
-        if safe.len() >= 180 {
+        if safe.len() >= DOWNLOAD_FILENAME_BYTE_BUDGET {
             break;
         }
         if character.is_control() || matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*') {

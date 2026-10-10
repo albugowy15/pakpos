@@ -11,6 +11,7 @@ use gtk::{
     AccessibleRole, Align, Box as GtkBox, Button, Label, Orientation, Overlay, Revealer,
     RevealerTransitionType, Widget, glib, prelude::*,
 };
+use pakpos::config::{ERROR_TOAST_DURATION_SECONDS, TOAST_DURATION_SECONDS};
 
 use super::set_accessible_label;
 
@@ -102,7 +103,12 @@ impl Toast {
         self.sequence.set(sequence);
         let current_sequence = self.sequence.clone();
         let revealer = self.revealer.downgrade();
-        glib::timeout_add_seconds_local_once(if error { 6 } else { 4 }, move || {
+        let duration = if error {
+            ERROR_TOAST_DURATION_SECONDS
+        } else {
+            TOAST_DURATION_SECONDS
+        };
+        glib::timeout_add_seconds_local_once(duration, move || {
             // Ignore a timer belonging to a message that has since been replaced.
             if current_sequence.get() == sequence
                 && let Some(revealer) = revealer.upgrade()

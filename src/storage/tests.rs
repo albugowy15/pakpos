@@ -13,7 +13,7 @@ fn collection(name: &str) -> CollectionSummary {
 
 fn request(url: &str) -> Request {
     Request {
-        method: HttpMethod::Post,
+        method: Method::POST,
         url: url.to_owned(),
         headers: vec![
             HeaderRow::enabled("X-Tag", "first"),
@@ -50,7 +50,7 @@ fn saves_lists_and_loads_a_request() {
     assert_eq!(store.list_collections().unwrap(), vec![collection.clone()]);
     let items = store.list_requests(collection.id).unwrap();
     assert_eq!(items, vec![request.node.clone()]);
-    assert_eq!(items[0].method, Some(HttpMethod::Post));
+    assert_eq!(items[0].method, Some(Method::POST));
     assert_eq!(store.load_request(request.node.id).unwrap(), request);
 }
 

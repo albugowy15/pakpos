@@ -11,19 +11,18 @@
 //! production lightweight; the integration suite validates exports against the
 //! vendored official schema.
 
-use std::{fmt, path::Path, str::FromStr};
+use std::{fmt, path::Path};
 
 use serde_json::{Map, Value, json};
 
 use crate::{
     collections::{CollectionRequest, CollectionSummary},
+    config::POSTMAN_COLLECTION_SCHEMA,
     models::{
-        FormField, HeaderRow, HttpMethod, MultipartField, MultipartValue, Request, RequestBody,
+        FormField, HeaderRow, MultipartField, MultipartValue, Request, RequestBody,
+        parse_supported_method,
     },
 };
-
-pub const COLLECTION_SCHEMA: &str =
-    "https://schema.getpostman.com/json/collection/v2.1.0/collection.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedCollection {
@@ -106,7 +105,7 @@ pub fn export_collection(
     serde_json::to_string_pretty(&json!({
         "info": {
             "name": collection.name,
-            "schema": COLLECTION_SCHEMA,
+            "schema": POSTMAN_COLLECTION_SCHEMA,
         },
         "item": items,
     }))
@@ -114,7 +113,7 @@ pub fn export_collection(
 }
 
 fn is_v21_schema(schema: &str) -> bool {
-    schema == COLLECTION_SCHEMA
+    schema == POSTMAN_COLLECTION_SCHEMA
         || schema
             .trim_end_matches('/')
             .ends_with("/collection/v2.1.0/collection.json")
@@ -154,7 +153,7 @@ fn import_request(
     let Some(method) = request
         .get("method")
         .and_then(Value::as_str)
-        .and_then(|method| HttpMethod::from_str(method).ok())
+        .and_then(|method| parse_supported_method(method).ok())
     else {
         return Ok(None);
     };
@@ -497,6 +496,7 @@ fn export_urlencoded(field: &FormField) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use crate::models::Method;
     use std::{path::PathBuf, sync::Arc};
 
     use super::*;
@@ -505,7 +505,7 @@ mod tests {
     fn imports_nested_folders_as_one_flat_request_list() {
         let source = format!(
             r#"{{
-                "info": {{"name": "Example", "schema": "{COLLECTION_SCHEMA}"}},
+                "info": {{"name": "Example", "schema": "{POSTMAN_COLLECTION_SCHEMA}"}},
                 "item": [
                     {{"name": "First folder", "item": [
                         {{"name": "First", "request": {{"method": "GET", "url": "https://example.com/first"}}}},
@@ -543,7 +543,7 @@ mod tests {
     fn imports_supported_fields_and_discards_unsupported_behavior() {
         let source = format!(
             r#"{{
-                "info": {{"name": "API", "schema": "{COLLECTION_SCHEMA}"}},
+                "info": {{"name": "API", "schema": "{POSTMAN_COLLECTION_SCHEMA}"}},
                 "variable": [{{"key": "host", "value": "example.com"}}],
                 "auth": {{"type": "bearer"}},
                 "item": [
@@ -588,7 +588,7 @@ mod tests {
     fn imports_json_and_relative_multipart_files() {
         let source = format!(
             r#"{{
-                "info": {{"name": "Bodies", "schema": "{COLLECTION_SCHEMA}"}},
+                "info": {{"name": "Bodies", "schema": "{POSTMAN_COLLECTION_SCHEMA}"}},
                 "item": [
                     {{"name": "JSON", "request": {{
                         "method": "POST", "url": "https://example.com/json",
@@ -629,7 +629,7 @@ mod tests {
     fn imports_and_exports_form_plain_text_and_xml_bodies() {
         let source = format!(
             r#"{{
-                "info": {{"name": "Text bodies", "schema": "{COLLECTION_SCHEMA}"}},
+                "info": {{"name": "Text bodies", "schema": "{POSTMAN_COLLECTION_SCHEMA}"}},
                 "item": [
                     {{"name": "Form", "request": {{
                         "method": "POST", "url": "https://example.com/form",
@@ -690,7 +690,7 @@ mod tests {
             "Upload",
             0,
             Arc::new(Request {
-                method: HttpMethod::Post,
+                method: Method::POST,
                 url: "https://example.com/upload?tag=one&tag=two".to_owned(),
                 headers: vec![HeaderRow {
                     enabled: false,
