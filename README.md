@@ -11,7 +11,8 @@ The project is written in Rust with GTK4. Keeping everyday API testing practical
 
 - Send GET, POST, PUT, PATCH, DELETE, and HEAD requests over HTTP or HTTPS.
 - Enter ordered request headers, including repeated names, and enable or disable each row.
-- Send a JSON body without reformatting its source text.
+- Format JSON and XML request bodies with the editor's bottom-right button.
+  Plain Text detects JSON or XML for formatting; sending preserves the editor's text.
 - Send ordered URL-encoded key/value fields and edit plain text in GtkSourceView,
   with automatic default content types.
 - Edit JSON with GtkSourceView syntax highlighting that follows the GTK light/dark

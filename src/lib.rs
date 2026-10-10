@@ -10,6 +10,7 @@
 //! the binary runtime and return typed results to the application state.
 
 pub mod app;
+pub mod body_format;
 pub mod collections;
 pub mod config;
 pub mod curl;

@@ -111,6 +111,31 @@ impl Deref for RequestState {
     }
 }
 
+fn install_styles(display: &gtk::gdk::Display) {
+    let styles = gtk::CssProvider::new();
+    styles.load_from_data(
+        "
+        * { font-size: 12px; }
+        button.body-format-button {
+            min-width: 16px;
+            min-height: 16px;
+            padding: 2px;
+            border-radius: 4px;
+        }
+        .request-delete-action,
+        .request-delete-action:hover,
+        .request-delete-action:focus,
+        .request-delete-action:active,
+        .request-delete-action * { color: #e01b24; }
+        ",
+    );
+    gtk::style_context_add_provider_for_display(
+        display,
+        &styles,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
 pub fn build(application: &Application) {
     sourceview5::init();
     let autosave = AutosaveTrigger::default();
@@ -120,22 +145,7 @@ pub fn build(application: &Application) {
         .default_width(1000)
         .default_height(700)
         .build();
-    let styles = gtk::CssProvider::new();
-    styles.load_from_data(
-        "
-        * { font-size: 12px; }
-        .request-delete-action,
-        .request-delete-action:hover,
-        .request-delete-action:focus,
-        .request-delete-action:active,
-        .request-delete-action * { color: #e01b24; }
-        ",
-    );
-    gtk::style_context_add_provider_for_display(
-        &gtk::prelude::WidgetExt::display(&window),
-        &styles,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    install_styles(&gtk::prelude::WidgetExt::display(&window));
 
     let header_bar = HeaderBar::builder().build();
     window.set_titlebar(Some(&header_bar));
@@ -323,6 +333,7 @@ pub fn build(application: &Application) {
     root.set_end_child(Some(&main));
     let (overlay, toast) = Toast::overlay(&root);
     window.set_child(Some(&overlay));
+    body.connect_format_buttons(&toast);
 
     let state = Rc::new(RequestState::default());
     let editor_widgets = Rc::new(editor::EditorWidgetHandles {

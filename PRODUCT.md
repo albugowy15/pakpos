@@ -226,11 +226,22 @@ The JSON editor uses GtkSourceView's installed JSON language specification for
 syntax highlighting. It shows line numbers and keeps GtkSourceView's native
 indentation, but adds no Pakpos-specific completion, pair deletion, or key handling.
 Pasting or loading JSON preserves the supplied text.
+An icon button at the editor's bottom-right formats JSON on demand using the
+editor's indentation width. Formatting changes only whitespace outside strings,
+preserving key order, duplicate keys, and numeric and string spellings. It is one
+undoable edit and requests autosave. Invalid JSON stays unchanged and displays
+the parse error. The button is disabled for an empty body.
 
 **XML:** Provide the same multiline GtkSourceView editing experience using its
 installed XML language specification. Preserve and send the UTF-8 source unchanged
 with `Content-Type: application/xml` unless the user supplies an enabled
 Content-Type header. Do not require well-formed XML before sending.
+Provide the same small format icon at the editor's bottom-right. Formatting
+requires well-formed XML and indents element-only content while retaining raw
+attributes, namespace prefixes, entities, comments, declarations, and CDATA.
+Preserve mixed text/element content and subtrees with `xml:space="preserve"`.
+Malformed XML stays unchanged and displays its parse error. Formatting is one
+undoable edit and requests autosave.
 
 **Form URL Encoded:** Provide ordered rows with an enabled checkbox, key, value,
 and remove action. Allow repeated and empty keys or values, ignore blank placeholder
@@ -251,6 +262,9 @@ MIME type when known, otherwise `application/octet-stream`.
 theme-aware presentation, line numbers, indentation settings, and undo/redo support.
 Do not apply JSON syntax validation or a JSON language definition. Send
 the UTF-8 source unchanged with `Content-Type: text/plain` unless overridden.
+The format button detects JSON or XML and uses the corresponding formatter.
+Other plain text remains unchanged and shows a message explaining the supported
+formats. Formatting does not switch the body mode or its Content-Type.
 
 Body selection is independent of method; do not silently discard a configured body.
 Changing modes must retain edits during the current editing session, but only the

@@ -9,19 +9,23 @@
 //! focus loss. Dynamic row vectors mirror their GTK containers so collection is
 //! deterministic and preserves row order, duplicate headers, and disabled rows.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use gtk::{
     Align, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry,
     EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, SearchEntry,
     TextView, gio, glib, prelude::*,
 };
+use pakpos::body_format::{BodyFormat, FormatError, format_body};
 use pakpos::config::{
     EDITOR_INDENT_WIDTH, EDITOR_MAX_UNDO_LEVELS, EDITOR_TAB_WIDTH, SUPPORTED_METHODS,
 };
 use pakpos::models::{FormField, HeaderRow, MultipartField, MultipartValue, Request, RequestBody};
 use pakpos::net::ResponseData;
-use sourceview5::prelude::{BufferExt, SearchSettingsExt};
+use sourceview5::prelude::{BufferExt, SearchSettingsExt, ViewExt};
 
 use super::set_accessible_label;
 
@@ -63,13 +67,40 @@ pub(super) struct FormWidgets {
 pub(super) struct BodyWidgets {
     pub(super) mode: DropDown,
     pub(super) json_editor: sourceview5::View,
+    pub(super) json_format: Button,
     pub(super) xml_editor: sourceview5::View,
+    pub(super) xml_format: Button,
     pub(super) text_editor: sourceview5::View,
+    pub(super) text_format: Button,
     pub(super) form_box: GtkBox,
     pub(super) form_rows: Rc<RefCell<Vec<FormWidgets>>>,
     pub(super) multipart_box: GtkBox,
     pub(super) multipart_rows: Rc<RefCell<Vec<MultipartWidgets>>>,
     pub(super) autosave: AutosaveTrigger,
+}
+
+impl BodyWidgets {
+    pub(super) fn connect_format_buttons(&self, toast: &super::toast::Toast) {
+        for (button, view, format) in [
+            (&self.json_format, &self.json_editor, BodyFormat::Json),
+            (&self.xml_format, &self.xml_editor, BodyFormat::Xml),
+            (&self.text_format, &self.text_editor, BodyFormat::Auto),
+        ] {
+            button.connect_clicked({
+                let view = view.downgrade();
+                let autosave = self.autosave.clone();
+                let toast = toast.clone();
+                move |_| {
+                    let Some(view) = view.upgrade() else {
+                        return;
+                    };
+                    if let Err(error) = format_request_body(&view, &autosave, format) {
+                        toast.error(&format!("Could not format body: {error}"));
+                    }
+                }
+            });
+        }
+    }
 }
 
 pub(super) type EditorWidgets = Rc<EditorWidgetHandles>;
@@ -278,11 +309,11 @@ pub(super) fn build_body_page(
     ]);
     mode.set_halign(Align::Start);
     set_accessible_label(&mode, "Request body type");
-    let (editor, editor_scroll) =
+    let (editor, json_panel, json_format) =
         build_request_source_editor(Some("json"), "JSON request body", autosave);
-    let (xml_editor, xml_scroll) =
+    let (xml_editor, xml_panel, xml_format) =
         build_request_source_editor(Some("xml"), "XML request body", autosave);
-    let (text_editor, text_scroll) =
+    let (text_editor, text_panel, text_format) =
         build_request_source_editor(None, "Text request body", autosave);
 
     let form_panel = GtkBox::builder()
@@ -346,34 +377,37 @@ pub(super) fn build_body_page(
     multipart_scroll.set_visible(false);
 
     mode.connect_selected_notify({
-        let editor_scroll = editor_scroll.clone();
-        let xml_scroll = xml_scroll.clone();
-        let text_scroll = text_scroll.clone();
+        let json_panel = json_panel.clone();
+        let xml_panel = xml_panel.clone();
+        let text_panel = text_panel.clone();
         let form_scroll = form_scroll.clone();
         let multipart_scroll = multipart_scroll.clone();
         let autosave = autosave.clone();
         move |mode| {
-            editor_scroll.set_visible(mode.selected() == BODY_MODE_JSON);
-            xml_scroll.set_visible(mode.selected() == BODY_MODE_XML);
+            json_panel.set_visible(mode.selected() == BODY_MODE_JSON);
+            xml_panel.set_visible(mode.selected() == BODY_MODE_XML);
             form_scroll.set_visible(mode.selected() == BODY_MODE_FORM_URL_ENCODED);
-            text_scroll.set_visible(mode.selected() == BODY_MODE_TEXT);
+            text_panel.set_visible(mode.selected() == BODY_MODE_TEXT);
             multipart_scroll.set_visible(mode.selected() == BODY_MODE_MULTIPART);
             request_autosave(&autosave);
         }
     });
     page.append(&mode);
-    page.append(&editor_scroll);
-    page.append(&xml_scroll);
+    page.append(&json_panel);
+    page.append(&xml_panel);
     page.append(&form_scroll);
-    page.append(&text_scroll);
+    page.append(&text_panel);
     page.append(&multipart_scroll);
     (
         page,
         BodyWidgets {
             mode,
             json_editor: editor,
+            json_format,
             xml_editor,
+            xml_format,
             text_editor,
+            text_format,
             form_box,
             form_rows,
             multipart_box,
@@ -383,11 +417,43 @@ pub(super) fn build_body_page(
     )
 }
 
+fn format_request_body(
+    view: &sourceview5::View,
+    autosave: &AutosaveTrigger,
+    format: BodyFormat,
+) -> Result<(), FormatError> {
+    let buffer = view.buffer();
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    let indent_width = if view.indent_width() >= 0 {
+        view.indent_width() as usize
+    } else {
+        view.tab_width() as usize
+    };
+    let formatted = format_body(&text, format, indent_width)?;
+    if formatted != text.as_str() {
+        // set_text clears undo history; a delete/insert pair keeps this command
+        // as one user action and lets the folding adapter reveal edited lines.
+        buffer.begin_user_action();
+        buffer.delete(&mut buffer.start_iter(), &mut buffer.end_iter());
+        buffer.insert(&mut buffer.start_iter(), &formatted);
+        buffer.place_cursor(&buffer.start_iter());
+        buffer.end_user_action();
+        // Formatting replaces a long line with many short lines. Allocate the
+        // new scrollbar ranges before the next snapshot of their sliders.
+        view.queue_resize();
+        if let Some(scroll) = view.ancestor(ScrolledWindow::static_type()) {
+            scroll.queue_resize();
+        }
+        request_autosave(autosave);
+    }
+    Ok(())
+}
+
 fn build_request_source_editor(
     language_id: Option<&str>,
     accessible_label: &str,
     autosave: &AutosaveTrigger,
-) -> (sourceview5::View, ScrolledWindow) {
+) -> (sourceview5::View, gtk::Overlay, Button) {
     let language = language_id.and_then(|id| sourceview5::LanguageManager::default().language(id));
     let buffer_builder = sourceview5::Buffer::builder()
         .highlight_matching_brackets(true)
@@ -412,7 +478,7 @@ fn build_request_source_editor(
         .show_line_numbers(true)
         .wrap_mode(gtk::WrapMode::None)
         .top_margin(4)
-        .bottom_margin(4)
+        .bottom_margin(34)
         .left_margin(4)
         .right_margin(4)
         .build();
@@ -422,8 +488,59 @@ fn build_request_source_editor(
     let scroll = scrolled(&editor);
     scroll.set_vexpand(true);
     scroll.set_min_content_height(150);
-    scroll.set_visible(false);
-    (editor, scroll)
+    let format_icon = gtk::Image::from_icon_name("format-indent-more-symbolic");
+    format_icon.set_pixel_size(12);
+    let format_label = match language_id {
+        Some("json") => "Format JSON",
+        Some("xml") => "Format XML",
+        _ => "Format body (JSON or XML)",
+    };
+    let format = Button::builder()
+        .child(&format_icon)
+        .tooltip_text(format_label)
+        .halign(Align::End)
+        .valign(Align::End)
+        .margin_bottom(8)
+        .margin_end(8)
+        .focus_on_click(false)
+        .sensitive(false)
+        .build();
+    format.add_css_class("osd");
+    format.add_css_class("body-format-button");
+    set_accessible_label(&format, format_label);
+    let changing = Rc::new(Cell::new(false));
+    buffer.connect_begin_user_action({
+        let changing = changing.clone();
+        move |_| changing.set(true)
+    });
+    buffer.connect_end_user_action({
+        let changing = changing.clone();
+        let button = format.downgrade();
+        move |buffer| {
+            changing.set(false);
+            if let Some(button) = button.upgrade() {
+                button.set_sensitive(buffer.char_count() > 0);
+            }
+        }
+    });
+    buffer.connect_changed({
+        let button = format.downgrade();
+        move |buffer| {
+            // Replacing the body briefly empties the buffer. Keep the focused
+            // button stable until the complete undoable edit finishes.
+            if !changing.get()
+                && let Some(button) = button.upgrade()
+            {
+                button.set_sensitive(buffer.char_count() > 0);
+            }
+        }
+    });
+    let panel = gtk::Overlay::new();
+    panel.set_vexpand(true);
+    panel.set_visible(false);
+    panel.set_child(Some(&scroll));
+    panel.add_overlay(&format);
+    (editor, panel, format)
 }
 
 fn configure_editor_style_scheme(buffer: &sourceview5::Buffer) {

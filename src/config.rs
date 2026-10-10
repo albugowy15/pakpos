@@ -33,6 +33,7 @@ pub static SUPPORTED_METHODS: [Method; 6] = [
 pub const EDITOR_MAX_UNDO_LEVELS: u32 = 100;
 pub const EDITOR_INDENT_WIDTH: i32 = 2;
 pub const EDITOR_TAB_WIDTH: u32 = 2;
+pub const XML_FORMAT_MAX_DEPTH: usize = 128;
 pub const FOLD_REFRESH_DELAY: Duration = Duration::from_millis(150);
 
 pub const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(30);

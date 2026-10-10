@@ -282,6 +282,77 @@ pub(crate) fn validate_json(text: &str) -> Result<(), serde_json::Error> {
     serde_json::from_str::<ValidJson>(text).map(|_| ())
 }
 
+/// Pretty-print JSON by changing only whitespace outside strings.
+///
+/// Keep object order, duplicate keys, number spellings, and string escapes intact
+/// so formatting cannot change the request's data.
+pub fn format_json(text: &str, indent_width: usize) -> Result<String, serde_json::Error> {
+    validate_json(text)?;
+    let indent = " ".repeat(indent_width);
+    let mut formatted = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut previous = None;
+    while let Some(character) = characters.next() {
+        if in_string {
+            formatted.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            previous = Some(character);
+            continue;
+        }
+        match character {
+            '"' => {
+                in_string = true;
+                formatted.push(character);
+            }
+            '{' | '[' => {
+                formatted.push(character);
+                depth += 1;
+                while characters
+                    .peek()
+                    .is_some_and(|next| next.is_ascii_whitespace())
+                {
+                    characters.next();
+                }
+                if !matches!(characters.peek(), Some('}' | ']')) {
+                    append_json_indent(&mut formatted, &indent, depth);
+                }
+            }
+            '}' | ']' => {
+                depth -= 1;
+                if !matches!(previous, Some('{' | '[')) {
+                    append_json_indent(&mut formatted, &indent, depth);
+                }
+                formatted.push(character);
+            }
+            ',' => {
+                formatted.push(character);
+                append_json_indent(&mut formatted, &indent, depth);
+            }
+            ':' => formatted.push_str(": "),
+            character if character.is_ascii_whitespace() => continue,
+            _ => formatted.push(character),
+        }
+        previous = Some(character);
+    }
+    Ok(formatted)
+}
+
+fn append_json_indent(output: &mut String, indent: &str, depth: usize) {
+    output.push('\n');
+    for _ in 0..depth {
+        output.push_str(indent);
+    }
+}
+
 struct ValidJson;
 
 impl<'de> Deserialize<'de> for ValidJson {
@@ -427,6 +498,47 @@ impl std::error::Error for ValidationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_json_without_changing_keys_numbers_or_strings() {
+        let source = r#" {"z":1e+03,"a":-0,"z":9007199254740993,"nested":[{},[],{"text":"spaces  stay, [braces] \"quoted\" \\ \u0061 ☺"}]} "#;
+        let expected = concat!(
+            "{\n",
+            "  \"z\": 1e+03,\n",
+            "  \"a\": -0,\n",
+            "  \"z\": 9007199254740993,\n",
+            "  \"nested\": [\n",
+            "    {},\n",
+            "    [],\n",
+            "    {\n",
+            r#"      "text": "spaces  stay, [braces] \"quoted\" \\ \u0061 ☺""#,
+            "\n    }\n  ]\n}",
+        );
+        let formatted = format_json(source, 2).unwrap();
+        assert_eq!(formatted, expected);
+        assert_eq!(format_json(&formatted, 2).unwrap(), formatted);
+    }
+
+    #[test]
+    fn formats_json_scalars_empty_containers_and_custom_indentation() {
+        for source in ["null", "42", "true", r#""text""#, "{}", "[]"] {
+            assert_eq!(format_json(&format!(" \n{source}\t"), 2).unwrap(), source);
+        }
+        assert_eq!(
+            format_json("{ \"data\" : [ 1 , 2 ] }", 4).unwrap(),
+            "{\n    \"data\": [\n        1,\n        2\n    ]\n}"
+        );
+    }
+
+    #[test]
+    fn formatting_rejects_invalid_json_with_a_location() {
+        for source in ["", "{", "{\"a\":1,}", "[1] trailing", "NaN", "1e999"] {
+            assert!(format_json(source, 2).is_err(), "accepted {source:?}");
+        }
+        let error = format_json("{\n  nope\n}", 2).unwrap_err();
+        assert_eq!(error.line(), 2);
+        assert!(error.column() > 0);
+    }
 
     #[test]
     fn request_methods_keep_the_uppercase_string_serialization() {

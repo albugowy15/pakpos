@@ -121,6 +121,155 @@ fn assert_nested_folding_and_edits(view: &sourceview5::View) {
     assert_eq!(editor::buffer_text(view), text.replace("[\n", "["));
 }
 
+fn assert_request_body_formatting(body: &editor::BodyWidgets) {
+    let (notifications, toast) = Toast::overlay(&GtkBox::new(Orientation::Vertical, 0));
+    body.connect_format_buttons(&toast);
+    let notification = notifications
+        .last_child()
+        .unwrap()
+        .downcast::<gtk::Revealer>()
+        .unwrap();
+    assert_has_accessible_label(&body.json_format);
+    assert_eq!(body.json_format.halign(), gtk::Align::End);
+    assert_eq!(body.json_format.valign(), gtk::Align::End);
+    let panel = body.json_format.parent().unwrap();
+    body.mode.set_selected(1);
+    assert!(panel.is_visible());
+    for mode in [0, 2, 3, 4, 5] {
+        body.mode.set_selected(mode);
+        assert!(!panel.is_visible());
+    }
+    body.mode.set_selected(1);
+
+    let saves = Rc::new(std::cell::Cell::new(0));
+    *body.autosave.borrow_mut() = Some(Rc::new({
+        let saves = saves.clone();
+        move || saves.set(saves.get() + 1)
+    }));
+    let buffer = body.json_editor.buffer();
+    buffer.set_text("");
+    assert!(!body.json_format.is_sensitive());
+    let pasted = r#"{"z":[1,2],"a":true}"#;
+    buffer.insert(&mut buffer.start_iter(), pasted);
+    assert!(body.json_format.is_sensitive());
+    let sensitivity_changes = Rc::new(std::cell::Cell::new(0));
+    let sensitivity_handler = body.json_format.connect_sensitive_notify({
+        let sensitivity_changes = sensitivity_changes.clone();
+        move |_| sensitivity_changes.set(sensitivity_changes.get() + 1)
+    });
+    body.json_format.emit_clicked();
+    body.json_format.disconnect(sensitivity_handler);
+    assert_eq!(
+        sensitivity_changes.get(),
+        0,
+        "formatting briefly disabled its button"
+    );
+    let expected = "{\n  \"z\": [\n    1,\n    2\n  ],\n  \"a\": true\n}";
+    assert_eq!(editor::buffer_text(&body.json_editor), expected);
+    assert_eq!(saves.get(), 1);
+    assert!(buffer.is_modified());
+    body.json_format.emit_clicked();
+    assert_eq!(saves.get(), 1, "unchanged formatting requested a save");
+    buffer.undo();
+    assert_eq!(editor::buffer_text(&body.json_editor), pasted);
+    buffer.undo();
+    assert_eq!(editor::buffer_text(&body.json_editor), "");
+    buffer.redo();
+    buffer.redo();
+    assert_eq!(editor::buffer_text(&body.json_editor), expected);
+
+    // Formatting reads the entire document, including collapsed sections.
+    let folded = "{\n \"hidden\" : [ 1 , 2 ]\n}";
+    buffer.set_text(folded);
+    buffer.place_cursor(&buffer.start_iter());
+    body.json_editor
+        .activate_action("fold.collapse-all", None)
+        .unwrap();
+    body.json_format.emit_clicked();
+    assert_eq!(
+        editor::buffer_text(&body.json_editor),
+        "{\n  \"hidden\": [\n    1,\n    2\n  ]\n}"
+    );
+    let tag = buffer.tag_table().lookup("pakpos-folded-lines").unwrap();
+    assert!(!buffer.iter_at_line(1).unwrap().has_tag(&tag));
+
+    let invalid = "{\n  nope\n}";
+    buffer.set_text(invalid);
+    buffer.set_modified(false);
+    let saved_before_error = saves.get();
+    body.json_format.emit_clicked();
+    assert_eq!(editor::buffer_text(&body.json_editor), invalid);
+    assert!(!buffer.is_modified());
+    assert_eq!(saves.get(), saved_before_error);
+    assert!(notification.reveals_child(), "missing formatting error");
+
+    for (mode, view, button, input, expected) in [
+        (
+            2,
+            &body.xml_editor,
+            &body.xml_format,
+            "<root><child>value</child><empty/></root>",
+            "<root>\n  <child>value</child>\n  <empty/>\n</root>",
+        ),
+        (
+            5,
+            &body.text_editor,
+            &body.text_format,
+            "{\"a\":1}",
+            "{\n  \"a\": 1\n}",
+        ),
+        (
+            5,
+            &body.text_editor,
+            &body.text_format,
+            "<root><child/></root>",
+            "<root>\n  <child/>\n</root>",
+        ),
+    ] {
+        body.mode.set_selected(mode);
+        assert_has_accessible_label(button);
+        assert!(button.parent().unwrap().is_visible());
+        let buffer = view.buffer();
+        buffer.set_text("");
+        assert!(!button.is_sensitive());
+        buffer.insert(&mut buffer.start_iter(), input);
+        assert!(button.is_sensitive());
+        let saved_before_format = saves.get();
+        button.emit_clicked();
+        assert_eq!(editor::buffer_text(view), expected);
+        assert_eq!(saves.get(), saved_before_format + 1);
+        buffer.undo();
+        assert_eq!(editor::buffer_text(view), input);
+        buffer.redo();
+        assert_eq!(editor::buffer_text(view), expected);
+    }
+    for (mode, view, button, input) in [
+        (
+            2,
+            &body.xml_editor,
+            &body.xml_format,
+            "<root><child></root>",
+        ),
+        (
+            5,
+            &body.text_editor,
+            &body.text_format,
+            "plain words\n  preserve these spaces",
+        ),
+    ] {
+        body.mode.set_selected(mode);
+        let buffer = view.buffer();
+        buffer.set_text(input);
+        buffer.set_modified(false);
+        let saved_before_error = saves.get();
+        button.emit_clicked();
+        assert_eq!(editor::buffer_text(view), input);
+        assert!(!buffer.is_modified());
+        assert_eq!(saves.get(), saved_before_error);
+    }
+    *body.autosave.borrow_mut() = None;
+}
+
 fn assert_rendered_folding(
     body_page: &GtkBox,
     body: &editor::BodyWidgets,
@@ -276,6 +425,52 @@ fn assert_rendered_folding(
         }
     }
 
+    // Formatting changes both scroll ranges, gutter width, and focus while the
+    // button and editor are mapped. Exercise real frame allocation around it.
+    let compact_json = format!("{{\"items\":[{}]}}", vec!["{\"value\":1}"; 1000].join(","));
+    let compact_xml = format!("<items>{}</items>", "<item>value</item>".repeat(1000));
+    for (mode, view, button, compact) in [
+        (1, &body.json_editor, &body.json_format, &compact_json),
+        (2, &body.xml_editor, &body.xml_format, &compact_xml),
+        (5, &body.text_editor, &body.text_format, &compact_xml),
+    ] {
+        body.mode.set_selected(mode);
+        let request_buffer = view.buffer();
+        for _ in 0..2 {
+            request_buffer.set_text(compact);
+            let main_loop = glib::MainLoop::new(None, false);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(200), {
+                let main_loop = main_loop.clone();
+                move || main_loop.quit()
+            });
+            main_loop.run();
+            let scroll = view
+                .ancestor(gtk::ScrolledWindow::static_type())
+                .unwrap()
+                .downcast::<gtk::ScrolledWindow>()
+                .unwrap();
+            let horizontal = scroll.hadjustment();
+            horizontal.set_value(horizontal.upper() - horizontal.page_size());
+            button.grab_focus();
+            button.emit_clicked();
+            let main_loop = glib::MainLoop::new(None, false);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(200), {
+                let main_loop = main_loop.clone();
+                move || main_loop.quit()
+            });
+            main_loop.run();
+            assert!(request_buffer.line_count() > 1000);
+            request_buffer.undo();
+            let main_loop = glib::MainLoop::new(None, false);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(200), {
+                let main_loop = main_loop.clone();
+                move || main_loop.quit()
+            });
+            main_loop.run();
+            assert_eq!(&editor::buffer_text(view), compact);
+        }
+    }
+
     request_panel.remove(body_page);
     response_panel.remove(&response.root);
     window.destroy();
@@ -289,6 +484,7 @@ fn widget_lifetimes() {
     gtk::init().expect("GTK display required");
     sourceview5::init();
     let window = ApplicationWindow::builder().build();
+    install_styles(&gtk::prelude::WidgetExt::display(&window));
     let autosave = AutosaveTrigger::default();
     let sidebar = build_sidebar(autosave.clone());
     let (_, headers_box, header_rows) = build_headers_page(&autosave);
@@ -321,6 +517,7 @@ fn widget_lifetimes() {
     assert_has_accessible_label(&editor.body.json_editor);
     assert_has_accessible_label(&editor.body.xml_editor);
     assert_has_accessible_label(&editor.body.text_editor);
+    assert_request_body_formatting(&editor.body);
     assert!(response_body.view.shows_line_numbers());
     assert!(!response_body.view.is_editable());
     assert_eq!(response_body.view.wrap_mode(), gtk::WrapMode::None);
