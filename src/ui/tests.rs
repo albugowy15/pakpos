@@ -488,6 +488,87 @@ fn assert_source_folding(view: &sourceview5::View, text: &str) {
     assert!(!buffer.iter_at_line(1).unwrap().has_tag(&tag));
 }
 
+fn assert_folding_markers_while_typing(view: &sourceview5::View) {
+    use sourceview5::prelude::GutterRendererExt;
+
+    let gutter = sourceview5::prelude::ViewExt::gutter(view, gtk::TextWindowType::Left);
+    let mut child = gutter.first_child().unwrap();
+    let renderer = loop {
+        if child.widget_name() == "pakpos-folding-gutter" {
+            break child.downcast::<sourceview5::GutterRendererText>().unwrap();
+        }
+        child = child.next_sibling().unwrap();
+    };
+    let buffer = view.buffer();
+    let text = "{\n  \"data\": [\n    1\n  ]\n}";
+    let has_marker = |line| {
+        renderer.query_activatable(
+            &buffer.iter_at_line(line).unwrap(),
+            &gtk::gdk::Rectangle::new(0, 0, 20, 20),
+        )
+    };
+    let load = || {
+        buffer.set_text(text);
+        buffer.place_cursor(&buffer.start_iter());
+        view.activate_action("fold.collapse", None).unwrap();
+        view.activate_action("fold.expand", None).unwrap();
+        assert!(has_marker(0));
+        assert!(has_marker(1));
+    };
+    load();
+
+    // Do not run the main loop between keystrokes: these checks must see
+    // markers during the debounce delay, not just after region discovery.
+    for ch in ["2", "3", "4"] {
+        buffer.insert(&mut buffer.iter_at_line(2).unwrap(), ch);
+        assert!(has_marker(0), "typing removed the outer marker");
+        assert!(has_marker(1), "typing removed the nested marker");
+    }
+    buffer.insert(&mut buffer.start_iter(), "\n");
+    assert!(!has_marker(0));
+    assert!(has_marker(1), "outer marker did not follow its header");
+    assert!(has_marker(2), "nested marker did not follow its header");
+    buffer.undo();
+    assert!(has_marker(0));
+    assert!(has_marker(1));
+    assert!(!has_marker(2));
+
+    buffer.delete(
+        &mut buffer.iter_at_line(1).unwrap(),
+        &mut buffer.iter_at_line(2).unwrap(),
+    );
+    assert!(has_marker(0));
+    assert!(!has_marker(1), "deleted header left a stale marker");
+
+    load();
+    buffer.delete(&mut buffer.start_iter(), &mut buffer.iter_at_offset(1));
+    assert!(has_marker(0), "inline edits should wait for discovery");
+    let main_loop = glib::MainLoop::new(None, false);
+    glib::timeout_add_local_once(
+        pakpos::config::FOLD_REFRESH_DELAY + std::time::Duration::from_millis(50),
+        {
+            let main_loop = main_loop.clone();
+            move || main_loop.quit()
+        },
+    );
+    main_loop.run();
+    assert!(!has_marker(0), "discovery retained an invalid region");
+    assert!(has_marker(1));
+
+    // A click during the delay must validate boundaries before hiding text.
+    load();
+    buffer.delete(&mut buffer.start_iter(), &mut buffer.iter_at_offset(1));
+    view.activate_action("fold.collapse", None).unwrap();
+    let tag = buffer.tag_table().lookup("pakpos-folded-lines").unwrap();
+    assert!(!buffer.iter_at_line(1).unwrap().has_tag(&tag));
+    assert!(!has_marker(0));
+
+    load();
+    buffer.set_text("replacement\nsource");
+    assert!(!has_marker(0), "replacement retained the previous markers");
+    assert!(!has_marker(1));
+}
+
 fn assert_nested_folding_and_edits(view: &sourceview5::View) {
     let buffer = view.buffer();
     let text = "{\n  \"data\": [\n    {\n      \"value\": 1\n    }\n  ],\n  \"other\": true\n}";
@@ -1167,6 +1248,7 @@ fn widget_lifetimes() {
         "<root>\n  <name>Pakpos</name>\n</root>",
     );
     assert_source_folding(&editor.body.text_editor, "root\n  child\n  value");
+    assert_folding_markers_while_typing(&editor.body.json_editor);
     assert_nested_folding_and_edits(&editor.body.json_editor);
     set_source_content_type(&response_body.view, Some("application/json"));
     assert_source_folding(&response_body.view, "{\n  \"name\": \"Pakpos\"\n}");

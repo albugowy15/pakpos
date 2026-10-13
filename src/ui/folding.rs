@@ -1,7 +1,8 @@
 //! Line folding shared by request editors and the response source viewer.
 //!
 //! Folding only applies an invisible text tag: the buffer, undo history, and
-//! request source remain intact. Region discovery is debounced while typing.
+//! request source remain intact. Region discovery is debounced while typing;
+//! cached gutter markers follow line edits until discovery finishes.
 
 use std::{
     cell::{Cell, RefCell},
@@ -17,6 +18,49 @@ use sourceview5::prelude::*;
 struct Region {
     start: i32,
     end: i32,
+}
+
+fn insert_lines(regions: &mut [Region], line: i32, at_line_start: bool, count: i32) {
+    if count == 0 {
+        return;
+    }
+    for region in regions {
+        if region.start > line || (region.start == line && at_line_start) {
+            region.start += count;
+        }
+        if region.end >= line {
+            region.end += count;
+        }
+    }
+}
+
+fn delete_lines(regions: &mut Vec<Region>, start: (i32, i32), end: (i32, i32)) {
+    let count = end.0 - start.0;
+    if count == 0 {
+        return;
+    }
+    regions.retain_mut(|region| {
+        // Remove headers whose line was deleted, rather than moving their
+        // arrows onto unrelated text. A header at end column zero survives.
+        if (region.start > start.0 && region.start < end.0)
+            || (region.start == start.0 && start.1 == 0)
+            || (region.start == end.0 && end.1 > 0)
+        {
+            return false;
+        }
+        if region.start >= end.0 {
+            region.start -= count;
+        }
+        if region.end >= end.0 {
+            region.end -= count;
+        } else if region.end > start.0 {
+            region.end = start.0;
+        }
+        region.start < region.end
+    });
+    // Joining two header lines can put both markers on the same line.
+    // Discovery already orders outer regions first, so retain that preference.
+    regions.dedup_by_key(|region| region.start);
 }
 
 fn regions(text: &str, language: Option<&str>) -> Vec<Region> {
@@ -230,7 +274,16 @@ impl Folding {
         };
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
         let language = buffer.language().map(|language| language.id());
-        *self.regions.borrow_mut() = regions(&text, language.as_deref());
+        let discovered = regions(&text, language.as_deref());
+        let mut current = self.regions.borrow_mut();
+        if *current == discovered {
+            return;
+        }
+        *current = discovered;
+        drop(current);
+        if let Some(renderer) = self.renderer.upgrade() {
+            renderer.queue_draw();
+        }
     }
 
     fn expand_all(&self) {
@@ -243,7 +296,6 @@ impl Folding {
 
     fn invalidate(self: &Rc<Self>) {
         self.expand_all();
-        self.regions.borrow_mut().clear();
         self.dirty.set(true);
         if let Some(refresh) = self.refresh.borrow_mut().take() {
             refresh.remove();
@@ -255,15 +307,9 @@ impl Folding {
                 if let Some(folding) = weak.upgrade() {
                     folding.refresh.borrow_mut().take();
                     folding.ensure_regions();
-                    if let Some(renderer) = folding.renderer.upgrade() {
-                        renderer.queue_draw();
-                    }
                 }
             },
         ));
-        if let Some(renderer) = self.renderer.upgrade() {
-            renderer.queue_draw();
-        }
     }
 
     fn apply(&self) {
@@ -538,7 +584,15 @@ pub(super) fn install(view: &sourceview5::View) {
     buffer.connect_language_notify(glib::clone!(
         #[weak]
         folding,
-        move |_| folding.invalidate()
+        move |_| {
+            // Markers from another language must not survive the switch.
+            folding.expand_all();
+            folding.regions.borrow_mut().clear();
+            folding.invalidate();
+            if let Some(renderer) = folding.renderer.upgrade() {
+                renderer.queue_draw();
+            }
+        }
     ));
     // Reveal before GTK calculates a keyboard deletion range. Revealing only
     // in delete-range is too late: that range may already span hidden lines.
@@ -564,12 +618,32 @@ pub(super) fn install(view: &sourceview5::View) {
     buffer.connect_insert_text(glib::clone!(
         #[weak]
         folding,
-        move |_, _, _| folding.expand_all()
+        move |_, iter, text| {
+            folding.expand_all();
+            let count = text.bytes().filter(|&ch| ch == b'\n').count() as i32;
+            if count > 0 {
+                insert_lines(
+                    &mut folding.regions.borrow_mut(),
+                    iter.line(),
+                    iter.line_offset() == 0,
+                    count,
+                );
+            }
+        }
     ));
     buffer.connect_delete_range(glib::clone!(
         #[weak]
         folding,
-        move |_, _, _| folding.expand_all()
+        move |_, start, end| {
+            folding.expand_all();
+            if start.line() != end.line() {
+                delete_lines(
+                    &mut folding.regions.borrow_mut(),
+                    (start.line(), start.line_offset()),
+                    (end.line(), end.line_offset()),
+                );
+            }
+        }
     ));
     // Search and programmatic navigation move marks into hidden text.
     buffer.connect_mark_set(glib::clone!(
@@ -624,6 +698,82 @@ pub(super) fn install(view: &sourceview5::View) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_regions_follow_inserted_lines() {
+        let original = vec![Region { start: 0, end: 6 }, Region { start: 2, end: 4 }];
+        for (line, at_start, count, expected) in [
+            (2, false, 0, original.clone()),
+            (
+                0,
+                true,
+                1,
+                vec![Region { start: 1, end: 7 }, Region { start: 3, end: 5 }],
+            ),
+            (
+                2,
+                true,
+                2,
+                vec![Region { start: 0, end: 8 }, Region { start: 4, end: 6 }],
+            ),
+            (
+                2,
+                false,
+                1,
+                vec![Region { start: 0, end: 7 }, Region { start: 2, end: 5 }],
+            ),
+            (
+                4,
+                false,
+                1,
+                vec![Region { start: 0, end: 7 }, Region { start: 2, end: 5 }],
+            ),
+            (7, true, 1, original.clone()),
+        ] {
+            let mut current = original.clone();
+            insert_lines(&mut current, line, at_start, count);
+            assert_eq!(current, expected, "insertion at line {line}");
+        }
+    }
+
+    #[test]
+    fn cached_regions_follow_deleted_lines_and_drop_removed_headers() {
+        let original = vec![Region { start: 0, end: 6 }, Region { start: 2, end: 4 }];
+        for (start, end, expected) in [
+            ((2, 0), (2, 1), original.clone()),
+            (
+                (1, 0),
+                (2, 0),
+                vec![Region { start: 0, end: 5 }, Region { start: 1, end: 3 }],
+            ),
+            ((1, 0), (2, 1), vec![Region { start: 0, end: 5 }]),
+            ((2, 0), (3, 0), vec![Region { start: 0, end: 5 }]),
+            (
+                (2, 1),
+                (3, 0),
+                vec![Region { start: 0, end: 5 }, Region { start: 2, end: 3 }],
+            ),
+            (
+                (3, 0),
+                (5, 0),
+                vec![Region { start: 0, end: 4 }, Region { start: 2, end: 3 }],
+            ),
+            ((1, 0), (5, 0), vec![Region { start: 0, end: 2 }]),
+            ((0, 0), (6, 1), vec![]),
+            ((2, 1), (4, 0), vec![Region { start: 0, end: 4 }]),
+        ] {
+            let mut current = original.clone();
+            delete_lines(&mut current, start, end);
+            assert_eq!(current, expected, "deletion from {start:?} to {end:?}");
+        }
+    }
+
+    #[test]
+    fn joining_headers_keeps_one_outer_marker() {
+        let mut current = vec![Region { start: 0, end: 5 }, Region { start: 1, end: 3 }];
+        delete_lines(&mut current, (0, 1), (1, 0));
+        assert_eq!(current, vec![Region { start: 0, end: 4 }]);
+    }
 
     #[test]
     fn json_folds_nested_arrays_and_objects_and_ignores_strings() {

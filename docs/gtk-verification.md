@@ -93,3 +93,18 @@ After restoring scheme synchronization, formatting, strict Clippy, all 120
 headless tests, the release build, and the GTK ownership test passed again. The
 GTK test verifies live light/dark switching in all four source editors and
 disconnection of their handlers when windows are disposed.
+
+## Folding markers while typing — 2026-10-13
+
+Fold markers remain visible during debounced region discovery. Cached positions
+follow inserted and deleted lines; deleted headers and content replacement remove
+their markers. Discovery redraws the folding gutter only when regions change.
+Folding actions validate the current text before hiding lines, including during
+the debounce delay. Edits continue to expand collapsed sections.
+
+Formatting, strict Clippy across all targets/features, all 123 headless tests,
+and the release build passed. The display-dependent `widget_lifetimes` and
+`gobject_ownership` tests also passed with `GSK_RENDERER=cairo` and
+`G_DEBUG=fatal-warnings`. The widget test checks markers
+during consecutive keystrokes, newline insertion and undo, header deletion,
+debounced boundary validation, folding before the refresh, and content replacement.
