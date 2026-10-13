@@ -11,10 +11,11 @@
 
 use std::{cell::RefCell, rc::Rc};
 
+use adw::{Application, ApplicationWindow, prelude::*};
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry,
-    EventControllerFocus, GestureClick, Image, Label, ListBox, ListBoxRow, Orientation, Popover,
-    SelectionMode, StringList, Widget, gdk, gio, glib, prelude::*,
+    Align, Box as GtkBox, Button, DropDown, Entry, EventControllerFocus, GestureClick, Image,
+    Label, ListBox, ListBoxRow, Orientation, Popover, SelectionMode, StringList, Widget, gdk, gio,
+    glib,
 };
 use pakpos::app::{Action, DeferredAction, EffectOutput};
 use pakpos::config::AUTOSAVE_POLL_INTERVAL;

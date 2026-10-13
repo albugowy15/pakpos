@@ -18,10 +18,10 @@ use std::{
     rc::Rc,
 };
 
+use adw::{Application, ApplicationWindow, HeaderBar, ToolbarView, prelude::*};
 use gtk::{
-    Application, ApplicationWindow, Box as GtkBox, Button, DropDown, Entry, FileDialog, HeaderBar,
-    Label, ListBox, ListBoxRow, MenuButton, Notebook, Orientation, Paned, ToggleButton, gio, glib,
-    prelude::*,
+    Box as GtkBox, Button, DropDown, Entry, FileDialog, Label, ListBox, ListBoxRow, MenuButton,
+    Notebook, Orientation, Paned, ToggleButton, gio, glib,
 };
 use pakpos::{
     app::{Action, AppEvent, AppState, DeferredAction, Effect, EffectOutput},
@@ -147,7 +147,6 @@ fn install_styles(display: &gtk::gdk::Display) -> InstalledStyles {
     let styles = gtk::CssProvider::new();
     styles.load_from_data(
         "
-        * { font-size: 12px; }
         button.body-format-button {
             min-width: 16px;
             min-height: 16px;
@@ -158,7 +157,7 @@ fn install_styles(display: &gtk::gdk::Display) -> InstalledStyles {
         .request-delete-action:hover,
         .request-delete-action:focus,
         .request-delete-action:active,
-        .request-delete-action * { color: #e01b24; }
+        .request-delete-action * { color: @error_color; }
         ",
     );
     gtk::style_context_add_provider_for_display(
@@ -196,7 +195,8 @@ fn build_window(application: &Application) -> (ApplicationWindow, Rc<WindowResou
     let styles = install_styles(&gtk::prelude::WidgetExt::display(&window));
 
     let header_bar = HeaderBar::builder().build();
-    window.set_titlebar(Some(&header_bar));
+    let toolbar = ToolbarView::new();
+    toolbar.add_top_bar(&header_bar);
 
     let root = Paned::builder()
         .orientation(Orientation::Horizontal)
@@ -380,8 +380,9 @@ fn build_window(application: &Application) -> (ApplicationWindow, Rc<WindowResou
     main.set_start_child(Some(&request_panel));
     main.set_end_child(Some(&response_panel));
     root.set_end_child(Some(&main));
-    let (overlay, toast) = Toast::overlay(&root);
-    window.set_child(Some(&overlay));
+    toolbar.set_content(Some(&root));
+    let (overlay, toast) = Toast::overlay(&toolbar);
+    window.set_content(Some(&overlay));
     body.connect_format_buttons(&toast);
 
     let state = Rc::new(RequestState::default());

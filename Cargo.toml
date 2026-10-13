@@ -7,6 +7,7 @@ edition = "2024"
 storage-profiling = ["rusqlite/trace"]
 
 [dependencies]
+adw = { package = "libadwaita", version = "0.9.2", features = ["v1_4"] }
 gtk = { package = "gtk4", version = "0.11.5", features = ["v4_10"] }
 reqwest = { version = "0.13.5", default-features = false, features = [
   "multipart",

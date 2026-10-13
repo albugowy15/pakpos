@@ -38,12 +38,13 @@ than how a widget should look.
 
 `src/ui` is a GTK adapter:
 
-- `mod.rs` builds the main window and translates top-level user events.
+- `mod.rs` builds the libadwaita application window and toolbar view and
+  translates top-level user events.
 - `editor.rs` creates editor widgets and converts between widgets and `Request`.
 - `sidebar.rs` builds and renders collection navigation.
 - `dialogs.rs` owns modal GTK interactions.
 - `flow.rs` dispatches actions/effects and applies their results to views.
-- `toast.rs` presents transient, dismissible overlay notifications.
+- `toast.rs` adapts libadwaita's toast overlay for transient, dismissible notifications.
 
 The UI may retain GTK-only flags needed to suppress signal feedback while rendering.
 It must not open storage, execute HTTP requests, create Tokio runtimes, or spawn
@@ -60,9 +61,10 @@ It keeps application state, widget handles, the toast presenter, and the CSS
 registration alive. Signals, file/clipboard callbacks, effect completions, and
 deferred UI work use weak references with explicit fallback return values where
 needed. Disposing the window drops its resources and removes its autosave source
-and display CSS provider. Toast and folding owners cancel their outstanding
-sources on drop; theme handlers are disconnected when the target buffer is
-disposed. The response widget aggregate explicitly owns its search context.
+and display CSS provider. Toast owners dismiss their current native notification
+on drop; folding owners cancel their outstanding sources on drop. Style-manager
+handlers are disconnected when the target buffer is disposed. The response widget
+aggregate explicitly owns its search context.
 The source buffer deliberately owns folding state through one signal handler;
 folding state holds weak references back to the buffer and view.
 

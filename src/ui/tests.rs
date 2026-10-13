@@ -1,14 +1,14 @@
 //! GTK integration and widget-lifetime tests.
 //!
 //! Pure UI planning is tested in its owning modules. Tests here cover behavior
-//! that requires real GTK objects, including theme selection and release of
+//! that requires real GTK objects, including editor behavior and release of
 //! transient widget graphs. Display-dependent coverage stays ignored in the
 //! default headless suite and documents the command needed to run it manually.
 
 use super::*;
 use editor::{
     EditorWidgetHandles, ResponseWidgets, add_form_urlencoded_row, add_header_row,
-    add_multipart_row, apply_request, build_source_viewer, json_style_scheme_id,
+    add_multipart_row, apply_request, build_source_viewer, editor_style_scheme_id,
     set_source_content_type,
 };
 use pakpos::{app::CollectionSession, models::Request};
@@ -25,17 +25,30 @@ fn assert_has_accessible_label(widget: &impl IsA<gtk::Widget>) {
 }
 
 #[test]
-fn json_style_scheme_follows_the_gtk_theme() {
-    assert_eq!(json_style_scheme_id(false, Some("Adwaita")), "Adwaita");
-    assert_eq!(
-        json_style_scheme_id(false, Some("Adwaita-dark")),
-        "Adwaita-dark"
-    );
-    assert_eq!(
-        json_style_scheme_id(false, Some("Breeze_Darker")),
-        "Adwaita-dark"
-    );
-    assert_eq!(json_style_scheme_id(true, None), "Adwaita-dark");
+fn editor_style_scheme_follows_adwaita() {
+    assert_eq!(editor_style_scheme_id(false), "Adwaita");
+    assert_eq!(editor_style_scheme_id(true), "Adwaita-dark");
+}
+
+fn assert_editor_style_changes(editor: &editor::EditorWidgetHandles) {
+    let style_manager = adw::StyleManager::default();
+    let original = style_manager.color_scheme();
+    for (preference, expected) in [
+        (adw::ColorScheme::ForceDark, "Adwaita-dark"),
+        (adw::ColorScheme::ForceLight, "Adwaita"),
+    ] {
+        style_manager.set_color_scheme(preference);
+        for view in [
+            &editor.body.json_editor,
+            &editor.body.xml_editor,
+            &editor.body.text_editor,
+            &editor.response.body.view,
+        ] {
+            let buffer = view.buffer().downcast::<sourceview5::Buffer>().unwrap();
+            assert_eq!(buffer.style_scheme().unwrap().id(), expected);
+        }
+    }
+    style_manager.set_color_scheme(original);
 }
 
 /// Exercises the production ownership graph without loading or writing storage.
@@ -43,7 +56,7 @@ fn json_style_scheme_follows_the_gtk_theme() {
 #[test]
 #[ignore = "requires a GTK display"]
 fn gobject_ownership() {
-    gtk::init().expect("GTK display required");
+    adw::init().expect("GTK display required");
     sourceview5::init();
     toast::assert_lifetimes();
     let application = Application::builder()
@@ -54,6 +67,17 @@ fn gobject_ownership() {
     let context = glib::MainContext::default();
     for _ in 0..10 {
         let (window, resources) = build_window(&application);
+        assert_editor_style_changes(&resources.editor);
+        let overlay = window
+            .content()
+            .unwrap()
+            .downcast::<adw::ToastOverlay>()
+            .unwrap();
+        let toolbar = overlay.child().unwrap().downcast::<ToolbarView>().unwrap();
+        assert!(toolbar.content().unwrap().is::<Paned>());
+        // Keep temporary shell handles out of the window lifetime assertions.
+        drop(toolbar);
+        drop(overlay);
         window.present();
         while context.pending() {
             context.iteration(false);
@@ -270,7 +294,7 @@ fn gobject_ownership() {
 #[test]
 #[ignore = "requires a GTK display"]
 fn collection_switch_lifetimes() {
-    gtk::init().expect("GTK display required");
+    adw::init().expect("GTK display required");
     sourceview5::init();
     let window = ApplicationWindow::builder()
         .title("Pakpos collection memory verification")
@@ -298,7 +322,7 @@ fn collection_switch_lifetimes() {
     root.append(&editor.headers_box);
     root.append(&body_page);
     root.append(&editor.response.body.root);
-    window.set_child(Some(&root));
+    window.set_content(Some(&root));
     window.present();
     let state = Rc::new(RequestState::default());
     let context = glib::MainContext::default();
@@ -407,7 +431,7 @@ fn collection_switch_lifetimes() {
     .into_iter()
     .map(|view| (view.downgrade(), view.buffer().downgrade()))
     .collect();
-    window.set_child(None::<&gtk::Widget>);
+    window.set_content(None::<&gtk::Widget>);
     window.destroy();
     drop(window);
     drop(root);
@@ -518,13 +542,8 @@ fn assert_nested_folding_and_edits(view: &sourceview5::View) {
 }
 
 fn assert_request_body_formatting(body: &editor::BodyWidgets) {
-    let (notifications, toast) = Toast::overlay(&GtkBox::new(Orientation::Vertical, 0));
+    let (_notifications, toast) = Toast::overlay(&GtkBox::new(Orientation::Vertical, 0));
     body.connect_format_buttons(&toast);
-    let notification = notifications
-        .last_child()
-        .unwrap()
-        .downcast::<gtk::Revealer>()
-        .unwrap();
     assert_has_accessible_label(&body.json_format);
     assert_eq!(body.json_format.halign(), gtk::Align::End);
     assert_eq!(body.json_format.valign(), gtk::Align::End);
@@ -597,7 +616,15 @@ fn assert_request_body_formatting(body: &editor::BodyWidgets) {
     assert_eq!(editor::buffer_text(&body.json_editor), invalid);
     assert!(!buffer.is_modified());
     assert_eq!(saves.get(), saved_before_error);
-    assert!(notification.reveals_child(), "missing formatting error");
+    assert!(
+        toast
+            .current()
+            .unwrap()
+            .title()
+            .unwrap()
+            .starts_with("Could not format body:"),
+        "missing formatting error"
+    );
 
     for (mode, view, button, input, expected) in [
         (
@@ -949,7 +976,7 @@ fn assert_rendered_folding(
 #[test]
 #[ignore = "requires a GTK display"]
 fn widget_lifetimes() {
-    gtk::init().expect("GTK display required");
+    adw::init().expect("GTK display required");
     sourceview5::init();
     let window = ApplicationWindow::builder().build();
     let _styles = install_styles(&gtk::prelude::WidgetExt::display(&window));
@@ -1107,11 +1134,8 @@ fn widget_lifetimes() {
         xml_buffer.language().as_ref().map(|language| language.id()),
         Some("xml".into())
     );
-    let settings = gtk::Settings::default().expect("GTK settings should be available");
-    let expected_scheme = json_style_scheme_id(
-        settings.is_gtk_application_prefer_dark_theme(),
-        settings.gtk_theme_name().as_deref(),
-    );
+    let style_manager = adw::StyleManager::default();
+    let expected_scheme = editor_style_scheme_id(style_manager.is_dark());
     assert_eq!(
         source_buffer
             .style_scheme()
@@ -1168,7 +1192,7 @@ fn widget_lifetimes() {
     root.append(&sidebar.root);
     root.append(&editor.headers_box);
     root.append(&body_page);
-    window.set_child(Some(&root));
+    window.set_content(Some(&root));
 
     let first_header = editor.header_rows.borrow()[0].row.downgrade();
     let first_form = editor.body.form_rows.borrow()[0].row.downgrade();

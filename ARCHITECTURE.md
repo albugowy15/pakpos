@@ -15,7 +15,7 @@ This document describes the implementation as it exists. Product requirements li
 
 ## 1. System at a glance
 
-Pakpos is a native Linux desktop HTTP client built with Rust 2024, GTK4, and GtkSourceView 5. It stores request collections in an embedded SQLite database and executes HTTP requests with Reqwest. There is no browser runtime, application server, database server, cloud service, or persistent background daemon.
+Pakpos is a native Linux desktop HTTP client built with Rust 2024, GTK4, libadwaita, and GtkSourceView 5. It stores request collections in an embedded SQLite database and executes HTTP requests with Reqwest. There is no browser runtime, application server, database server, cloud service, or persistent background daemon.
 
 The core architecture is an action/effect design around a GTK application:
 
@@ -358,12 +358,12 @@ The UI is an adapter around application state. It owns GTK widgets, signal handl
 
 `ui::build` creates the main window:
 
-- header bar with collection actions and collection picker;
+- libadwaita application window and toolbar view with a header bar, collection actions, and collection picker;
 - horizontal pane separating the sidebar and main content;
 - switchable vertical or horizontal pane separating request and response areas;
 - method, URL, Send/Cancel, headers, and body controls;
 - response Body, Raw, and Headers views;
-- toast overlay for transient request errors and messages.
+- libadwaita toast overlay for transient request errors and messages.
 
 `RequestState` wraps `AppState` with UI-only state:
 
@@ -424,7 +424,9 @@ Close uses the same idea with `close_after_autosave`. A save failure keeps edits
 
 ### `ui/dialogs.rs` and `ui/toast.rs`
 
-`dialogs.rs` owns modal create, rename, and delete confirmation interactions. `toast.rs` owns the transient, dismissible overlay used for request-level messages. Collection workflow status is shown in the sidebar status label because those operations often span multiple steps.
+`dialogs.rs` owns modal create, rename, and delete confirmation interactions. `toast.rs` adapts libadwaita toasts for request-level messages; libadwaita owns dismissal and timeouts. Collection workflow status is shown in the sidebar status label because those operations often span multiple steps.
+
+Editor style schemes follow `adw::StyleManager::dark`, with signal handlers disconnected when buffers are disposed.
 
 ## 9. Runtime and threading: `src/runtime.rs`
 
@@ -741,6 +743,7 @@ Versions below are the requirements declared in `Cargo.toml`; `Cargo.lock` recor
 | Crate/library         | Manifest configuration                                               | Responsibility in Pakpos                                                                                                                      |
 | --------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Rust standard library | Rust 2024 edition                                                    | Files, paths, OS threads, channels, collections, `Rc`/`Arc`, time, and Unix permission/path APIs                                              |
+| `libadwaita` as `adw` | `0.9.2`, feature `v1_4` | Application initialization, Adwaita styling, application window, header bar, toolbar view, toasts, and system color preference |
 | `gtk4` as `gtk`       | `0.11.5`, feature `v4_10`                                            | Native window, widgets, signals, accessibility roles, clipboard, file dialogs, GIO actions, GDK input, and GLib main-loop integration         |
 | `sourceview5`         | `0.11.2`                                                             | JSON/plain-text source views, JSON language highlighting, line numbers, undo/redo, and style schemes                                           |
 | `reqwest`             | `0.13.5`, default features disabled; `multipart`, `rustls`, `stream` | HTTP/HTTPS client, headers, URL parsing, streamed multipart files, streamed response chunks, and TLS through Rustls                           |
@@ -764,10 +767,10 @@ GTK re-exports GIO, GLib, and GDK modules used by the UI and runtime. They are n
 
 ### Native/system libraries
 
-Pakpos requires Linux build tooling plus GTK 4.10 or newer and GtkSourceView 5 development files. Common package names are:
+Pakpos requires Linux build tooling plus GTK 4.10 or newer, libadwaita 1.4 or newer, and GtkSourceView 5 development files. Common package names are:
 
-- Arch Linux: `gtk4`, `gtksourceview5`, `pkgconf`, and Rust/build tools;
-- Debian/Ubuntu: `libgtk-4-dev`, `libgtksourceview-5-dev`, `pkg-config`, and `build-essential`.
+- Arch Linux: `gtk4`, `libadwaita`, `gtksourceview5`, `pkgconf`, and Rust/build tools;
+- Debian/Ubuntu: `libgtk-4-dev`, `libadwaita-1-dev`, `libgtksourceview-5-dev`, `pkg-config`, and `build-essential`.
 
 SQLite is compiled from the `rusqlite` bundled feature. OpenSSL is not required for HTTP because Reqwest uses Rustls.
 

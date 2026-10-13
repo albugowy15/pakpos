@@ -1,6 +1,6 @@
 # Pakpos
 
-Pakpos is a native Linux desktop app for testing HTTP APIs, built with Rust and GTK4. Compose a request, send it, inspect the response, and save it in a local collection. All without an account, cloud storage, or a browser runtime.
+Pakpos is a native Linux desktop app for testing HTTP APIs, built with Rust, GTK4, and libadwaita. Compose a request, send it, inspect the response, and save it in a local collection. All without an account, cloud storage, or a browser runtime.
 
 ![Pakpos request editor](https://res.cloudinary.com/bughowi-assets/image/upload/v1790502451/pakpos-demo-1.png)
 ![Pakpos response viewer](https://res.cloudinary.com/bughowi-assets/image/upload/v1790502451/pakpos-demo-2.png)
@@ -15,17 +15,17 @@ Low memory use is a core design goal. Pakpos uses native widgets, streams large 
 
 ### Install a release
 
-Release binaries support **x86_64 Linux** and require **GTK 4.10 or newer** and **GtkSourceView 5**. Rust is only needed when building from source. Install the runtime libraries through your distribution's package manager:
+Release binaries support **x86_64 Linux** and require **GTK 4.10 or newer**, **libadwaita 1.4 or newer**, and **GtkSourceView 5**. Rust is only needed when building from source. Install the runtime libraries through your distribution's package manager:
 
 ```sh
 # Arch Linux
-sudo pacman -S --needed gtk4 gtksourceview5
+sudo pacman -S --needed gtk4 libadwaita gtksourceview5
 
-# Debian / Ubuntu (with GTK 4.10 or newer available)
-sudo apt install libgtk-4-1 libgtksourceview-5-0
+# Debian / Ubuntu (with GTK 4.10+ and libadwaita 1.4+ available)
+sudo apt install libgtk-4-1 libadwaita-1-0 libgtksourceview-5-0
 
 # Fedora
-sudo dnf install gtk4 gtksourceview5
+sudo dnf install gtk4 libadwaita gtksourceview5
 ```
 
 Then install the latest stable release:
@@ -53,13 +53,13 @@ Install the latest stable Rust toolchain using `rustup` by following the [offici
 
 ```sh
 # Arch Linux
-sudo pacman -S --needed base-devel gtk4 gtksourceview5 pkgconf
+sudo pacman -S --needed base-devel gtk4 libadwaita gtksourceview5 pkgconf
 
-# Debian / Ubuntu (with GTK 4.10 or newer available)
-sudo apt install build-essential libgtk-4-dev libgtksourceview-5-dev pkg-config
+# Debian / Ubuntu (with GTK 4.10+ and libadwaita 1.4+ available)
+sudo apt install build-essential libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev pkg-config
 
 # Fedora
-sudo dnf install gcc gtk4-devel gtksourceview5-devel pkgconf-pkg-config
+sudo dnf install gcc gtk4-devel libadwaita-devel gtksourceview5-devel pkgconf-pkg-config
 ```
 
 Clone the repository, then build and launch Pakpos:
@@ -82,7 +82,7 @@ Pakpos validates URLs, headers, JSON, and upload files before sending. Cancel an
 
 ### Native editing and layout
 
-Request editors provide line numbers, indentation, bracket matching, and undo/redo, with syntax highlighting for JSON and XML. Format JSON or XML with the editor's format button; plain-text mode can detect either format. Sending preserves the editor's text. The interface and editor colors follow your GTK light or dark theme, and request and response panels can be stacked or shown side by side.
+Request editors provide line numbers, indentation, bracket matching, and undo/redo, with syntax highlighting for JSON and XML. Format JSON or XML with the editor's format button; plain-text mode can detect either format. Sending preserves the editor's text. The libadwaita interface and editor colors follow your system light or dark preference, and request and response panels can be stacked or shown side by side.
 
 Collapse and expand sections in request editors and the response viewer using gutter arrows, context menus, or `Ctrl+Alt+Left` / `Ctrl+Alt+Right`. Add `Shift` to collapse or expand all sections. Folding follows JSON and XML/HTML structure or plain-text indentation; editing expands folded sections. Send requests with `Ctrl+Enter`.
 

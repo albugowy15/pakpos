@@ -190,7 +190,7 @@ fi
 
 say "Pakpos installed to ${install_dir}/pakpos"
 say "Desktop launcher installed to ${applications_dir}/com.bughowi.Pakpos.desktop"
-say "Pakpos requires GTK 4.10 or newer and GtkSourceView 5 at runtime."
+say "Pakpos requires GTK 4.10 or newer, libadwaita 1.4 or newer, and GtkSourceView 5 at runtime."
 
 case ":${PATH:-}:" in
     *:"$install_dir":*) ;;

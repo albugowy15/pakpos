@@ -14,10 +14,10 @@ use std::{
     rc::Rc,
 };
 
+use adw::{ApplicationWindow, prelude::*};
 use gtk::{
-    Align, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry,
-    EventControllerFocus, FileDialog, Orientation, PolicyType, ScrolledWindow, SearchEntry,
-    TextView, gio, glib, prelude::*,
+    Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, EventControllerFocus, FileDialog,
+    Orientation, PolicyType, ScrolledWindow, SearchEntry, TextView, gio, glib,
 };
 use pakpos::body_format::{BodyFormat, FormatError, format_body};
 use pakpos::config::{
@@ -563,56 +563,36 @@ fn build_request_source_editor(
 }
 
 fn configure_editor_style_scheme(buffer: &sourceview5::Buffer) {
-    let Some(settings) = gtk::Settings::default() else {
-        return;
-    };
-    apply_editor_style_scheme(buffer, &settings);
-    let dark_theme_handler =
-        settings.connect_gtk_application_prefer_dark_theme_notify(glib::clone!(
-            #[weak]
-            buffer,
-            move |settings| {
-                apply_editor_style_scheme(&buffer, settings);
-            }
-        ));
-    let theme_name_handler = settings.connect_gtk_theme_name_notify(glib::clone!(
+    let style_manager = adw::StyleManager::default();
+    apply_editor_style_scheme(buffer, &style_manager);
+    let dark_handler = style_manager.connect_dark_notify(glib::clone!(
         #[weak]
         buffer,
-        move |settings| {
-            apply_editor_style_scheme(&buffer, settings);
+        move |style_manager| {
+            apply_editor_style_scheme(&buffer, style_manager);
         }
     ));
-    // Settings outlives every window. Remove its callbacks when their buffer
+    // StyleManager outlives every window. Remove its callbacks when their buffer
     // goes away so even weak-reference closures do not accumulate across windows.
     buffer.add_weak_ref_notify_local({
-        let settings = settings.downgrade();
+        let style_manager = style_manager.downgrade();
         move || {
-            if let Some(settings) = settings.upgrade() {
-                settings.disconnect(dark_theme_handler);
-                settings.disconnect(theme_name_handler);
+            if let Some(style_manager) = style_manager.upgrade() {
+                style_manager.disconnect(dark_handler);
             }
         }
     });
 }
 
-fn apply_editor_style_scheme(buffer: &sourceview5::Buffer, settings: &gtk::Settings) {
-    let scheme_id = json_style_scheme_id(
-        settings.is_gtk_application_prefer_dark_theme(),
-        settings.gtk_theme_name().as_deref(),
-    );
+fn apply_editor_style_scheme(buffer: &sourceview5::Buffer, style_manager: &adw::StyleManager) {
+    let scheme_id = editor_style_scheme_id(style_manager.is_dark());
     if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme(scheme_id) {
         buffer.set_style_scheme(Some(&scheme));
     }
 }
 
-pub(super) fn json_style_scheme_id(prefer_dark: bool, theme_name: Option<&str>) -> &'static str {
-    let theme_name_is_dark =
-        theme_name.is_some_and(|name| name.to_ascii_lowercase().contains("dark"));
-    if prefer_dark || theme_name_is_dark {
-        "Adwaita-dark"
-    } else {
-        "Adwaita"
-    }
+pub(super) fn editor_style_scheme_id(dark: bool) -> &'static str {
+    if dark { "Adwaita-dark" } else { "Adwaita" }
 }
 
 pub(super) fn add_form_urlencoded_row(

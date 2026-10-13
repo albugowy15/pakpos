@@ -12,7 +12,8 @@
 
 use std::{rc::Rc, sync::Arc};
 
-use gtk::{ApplicationWindow, Label, gdk, glib, prelude::*};
+use adw::{ApplicationWindow, prelude::*};
+use gtk::{Label, gdk, glib};
 use pakpos::{
     app::{Action, AppEvent, CollectionChanges, CollectionSession, DeferredAction, EffectOutput},
     collections::{CollectionNode, CollectionSummary},

@@ -1,7 +1,9 @@
 # Pakpos development
 
 Pakpos is a native Rust and GTK4 application for Linux. The initial implementation
-targets GTK 4.10 or newer and uses the system theme.
+targets GTK 4.10 or newer and libadwaita 1.4 or newer. The Adwaita interface
+and GtkSourceView editors follow the system light or dark preference through
+libadwaita's style manager.
 
 The source dependency boundaries and rules for application actions, effects, GTK,
 and runtime adapters are documented in [`architecture.md`](architecture.md).
@@ -9,7 +11,7 @@ and runtime adapters are documented in [`architecture.md`](architecture.md).
 On Debian or Ubuntu, install the native build tools before building:
 
 ```sh
-sudo apt install build-essential libgtk-4-dev libgtksourceview-5-dev pkg-config
+sudo apt install build-essential libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev pkg-config
 ```
 
 Then run:

@@ -7,7 +7,8 @@
 mod runtime;
 mod ui;
 
-use gtk::{Application, gio, prelude::*};
+use adw::{Application, prelude::*};
+use gtk::gio;
 use pakpos::config::APPLICATION_ID;
 
 fn main() -> gtk::glib::ExitCode {

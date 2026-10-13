@@ -81,8 +81,8 @@ it does not require invoking the curl executable.
   interchange format, not Pakpos's working storage format.
 - Run as a native Linux desktop application. Do not embed Electron, Chromium, a
   WebView, or a browser-based editor, including for JSON editing or HTML responses.
-- Use native GTK styling, including the user's theme. Do not override colors or
-  introduce a custom theme. Adjust spacing, sizing, and typography where useful.
+- Use libadwaita's native Adwaita styling and the system light/dark preference.
+  Do not introduce a custom theme. Adjust spacing, sizing, and typography where useful.
 - The project now separates domain models, application state, GTK adapters, runtime
   effects, and SQLite storage. Inspect the actual tree before further implementation
   and preserve unrelated user changes; do not reconstruct removed code automatically.
@@ -480,7 +480,7 @@ compatibility with every Postman feature.
   applicable. Show errors as overlay toasts.
 - Use resizable panes and scrollable editors instead of a dense dashboard. The UI
   should remain usable at approximately 900 × 600 without clipping core controls.
-- Use standard GTK widgets, labels, focus behavior, file dialogs, and system theme.
+- Use standard GTK widgets, labels, focus behavior, file dialogs, and libadwaita styling.
   Monospace text is appropriate for URLs, bodies, and header values.
 - Ensure keyboard access, accessible control labels, visible focus, and messages
   that do not rely on color alone. Support Ctrl+Enter to send and Ctrl+O to focus the

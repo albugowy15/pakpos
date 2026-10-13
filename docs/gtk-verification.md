@@ -41,3 +41,55 @@ to 900 × 600. Run the display-dependent regression test from a desktop session:
 cargo build --release
 cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1
 ```
+
+## Libadwaita integration verification — 2026-10-10
+
+Environment: GTK 4.24.1, libadwaita 1.10.0, and GtkSourceView 5.22.0.
+The build targets GTK 4.10+ and libadwaita 1.4+.
+
+Pakpos now initializes through `adw::Application` and uses an
+`adw::ApplicationWindow`, `adw::HeaderBar`, and `adw::ToolbarView`. The existing
+resizable sidebar and request/response panes remain inside the toolbar content.
+Request notifications use `adw::ToastOverlay`; messages are plain text, a new
+message dismisses its predecessor, and errors retain the longer timeout.
+The interface uses Adwaita typography, and delete actions use its error color.
+
+Formatting, strict Clippy across all targets/features, all 120 headless tests,
+and the release build passed. The three display-dependent tests below also
+passed with warnings treated as fatal and the Cairo renderer:
+
+```sh
+GSK_RENDERER=cairo G_DEBUG=fatal-warnings cargo test --bin pakpos gobject_ownership -- --ignored --test-threads=1 --nocapture
+GSK_RENDERER=cairo G_DEBUG=fatal-warnings cargo test --bin pakpos widget_lifetimes -- --ignored --test-threads=1 --nocapture
+GSK_RENDERER=cairo G_DEBUG=fatal-warnings cargo test --bin pakpos collection_switch_lifetimes -- --ignored --test-threads=1 --nocapture
+```
+
+The ownership test checks the native shell, live light/dark changes in the JSON,
+XML, plain-text, and response editors, toast replacement and disposal, and full
+window cleanup. The widget test checks accessibility, formatting-error toasts,
+and editor behavior. The collection test checks cleanup across 100 collection
+switches. The earlier manual 900 × 600 visual pass above predates this integration.
+
+## Default editor scheme experiment — 2026-10-10
+
+Removed application style-scheme selection and light/dark handlers from both
+request and response source editors. The corresponding scheme-selection test
+and forced-Adwaita assertions were removed; syntax-language configuration remains.
+
+A temporary diagnostic in the existing GTK ownership test inspected all four
+source buffers and captured the application in forced light and dark modes.
+GtkSourceView selected `classic` for JSON, XML, plain text, and responses in both
+modes. The shell changed appearance, but the editor retained a white background;
+response text became unreadable in the dark-mode capture. The diagnostic was
+removed after inspection. Application style-scheme selection was subsequently
+restored to fix the dark-mode readability failure; editors again use `Adwaita`
+and `Adwaita-dark`, synchronized with libadwaita's style manager.
+
+Formatting, strict Clippy, all 119 headless tests, the release build, and the GTK
+ownership test passed. The light and dark snapshots are in the temporary directory
+as `pakpos-default-style-light.png` and `pakpos-default-style-dark.png`.
+
+After restoring scheme synchronization, formatting, strict Clippy, all 120
+headless tests, the release build, and the GTK ownership test passed again. The
+GTK test verifies live light/dark switching in all four source editors and
+disconnection of their handlers when windows are disposed.

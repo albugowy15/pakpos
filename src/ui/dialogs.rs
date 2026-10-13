@@ -8,9 +8,10 @@
 
 use std::rc::Rc;
 
+use adw::{ApplicationWindow, prelude::*};
 use gtk::{
-    AlertDialog, Align, ApplicationWindow, Box as GtkBox, Button, Entry, EventControllerKey, Label,
-    Orientation, Window, gdk, gio, glib, prelude::*,
+    AlertDialog, Align, Box as GtkBox, Button, Entry, EventControllerKey, Label, Orientation,
+    Window, gdk, gio, glib,
 };
 use pakpos::{
     app::{Action, CollectionSession, EffectOutput},
